@@ -186,8 +186,7 @@ def test_an_upstream_epsilon_crash_becomes_an_actionable_error(monkeypatch, make
     bare TypeError sends people looking for a bug in their own data.  We turn it
     into a message that names the cause and the fix.
     """
-    import sklearn.cluster as sk_cluster
-
+    import kmer_dust.cluster as kd_cluster
     from kmer_dust import cluster as cluster_mod
 
     class _Exploding:
@@ -197,7 +196,9 @@ def test_an_upstream_epsilon_crash_becomes_an_actionable_error(monkeypatch, make
         def fit(self, x):
             raise TypeError("only 0-dimensional arrays can be converted to Python scalars")
 
-    monkeypatch.setattr(sk_cluster, "HDBSCAN", _Exploding)
+    # Patch the backend selector, not sklearn: the stage prefers fast_hdbscan
+    # when it is installed, so patching sklearn directly would be a no-op.
+    monkeypatch.setattr(kd_cluster, "_hdbscan_backend", lambda: (_Exploding, "sklearn"))
 
     cfg = make_config()
     cfg.cluster.method = "hdbscan"
@@ -220,8 +221,7 @@ def test_an_upstream_epsilon_crash_becomes_an_actionable_error(monkeypatch, make
 
 
 def test_an_unrelated_typeerror_is_not_reinterpreted(monkeypatch, make_config, run_dir):
-    import sklearn.cluster as sk_cluster
-
+    import kmer_dust.cluster as kd_cluster
     from kmer_dust import cluster as cluster_mod
 
     class _Exploding:
@@ -231,7 +231,9 @@ def test_an_unrelated_typeerror_is_not_reinterpreted(monkeypatch, make_config, r
         def fit(self, x):
             raise TypeError("something else entirely")
 
-    monkeypatch.setattr(sk_cluster, "HDBSCAN", _Exploding)
+    # Patch the backend selector, not sklearn: the stage prefers fast_hdbscan
+    # when it is installed, so patching sklearn directly would be a no-op.
+    monkeypatch.setattr(kd_cluster, "_hdbscan_backend", lambda: (_Exploding, "sklearn"))
     cfg = make_config()
     cfg.cluster.method = "hdbscan"
     cfg.cluster.cluster_selection_epsilon = 0.5
@@ -310,3 +312,56 @@ def test_propagation_with_no_labelled_anchors_is_all_noise():
     )
     assert (labels == -1).all()
     assert (prob == 0).all()
+
+
+def test_the_fast_backend_is_preferred_when_installed():
+    """scikit-learn's HDBSCAN has no Boruvka MST, so it is O(n^2) even in 2-D.
+
+    Measured on a real 1.3M-bin embedding: sklearn 4819 s, fast_hdbscan 4.7 s --
+    ~1000x -- for the same clustering (ARI 0.832 / AMI 0.931 at 200k, cluster
+    counts within 1 %). The preference must not silently regress.
+    """
+    from kmer_dust.cluster import _hdbscan_backend
+
+    klass, name = _hdbscan_backend()
+    pytest.importorskip("fast_hdbscan")
+    assert name == "fast_hdbscan"
+    assert klass.__module__.startswith("fast_hdbscan")
+
+
+def test_the_backend_falls_back_to_sklearn(monkeypatch):
+    """A bare install must still work, just slowly."""
+    import builtins
+
+    import kmer_dust.cluster as kd_cluster
+
+    real_import = builtins.__import__
+
+    def _no_fast(name, *args, **kwargs):
+        if name == "fast_hdbscan":
+            raise ImportError("simulated: not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_fast)
+    klass, name = kd_cluster._hdbscan_backend()
+    assert name == "sklearn"
+    assert klass.__module__.startswith("sklearn")
+
+
+def test_backend_kwargs_are_filtered_to_what_it_accepts(make_config, run_dir):
+    """The two backends take different arguments: fast_hdbscan has no n_jobs."""
+    import numpy as np
+
+    from kmer_dust.cluster import cluster as cluster_stage
+
+    rng = np.random.default_rng(0)
+    coords = np.vstack(
+        [rng.normal(0, 0.2, size=(120, 2)), rng.normal(6, 0.2, size=(120, 2))]
+    ).astype(np.float32)
+    rows = make_rows(len(coords))
+    cfg = make_config()
+    cfg.cluster.min_cluster_size = 20
+    cfg.cluster.min_samples = 5
+    out = cluster_stage(coords, rows, cfg, run_dir, force=True)
+    assert len(out) == len(coords)
+    assert out["cluster"].nunique() >= 2, "two well-separated blobs must not merge"

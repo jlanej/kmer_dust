@@ -124,10 +124,25 @@ same k-mers are chosen no matter what order the shards were processed in.
 
 If the run comes back >90 % noise, lower `min_samples` before anything else.
 
-> **Clustering is the scaling wall, and subsampling does not fix it.**
-> scikit-learn's HDBSCAN is quadratic in *n* on a 2-D embedding — measured at
-> 2.0 s / 25 k rows, 8.0 s / 50 k, 31.3 s / 100 k, 124.5 s / 200 k, i.e. ~4×
-> per doubling. That puts 1.3 M bins at ~88 minutes and 5 M at most of a day.
+> **Install `fast_hdbscan`.** `pip install 'kmer-dust[fast]'`. scikit-learn's
+> HDBSCAN implements only brute-force and Prim MST construction — there is no
+> Boruvka path — so it is quadratic in *n* **even on a 2-D embedding**. That is
+> a property of the implementation, not of the algorithm. Measured on a real
+> 1.3 M-bin embedding:
+>
+> | n | sklearn | fast_hdbscan | speedup | ARI | AMI |
+> | --- | --- | --- | --- | --- | --- |
+> | 50,000 | 7.8 s | 0.1 s | 71× | 0.820 | 0.929 |
+> | 200,000 | 126.0 s | 0.5 s | 251× | 0.832 | 0.931 |
+> | 1,303,159 | **4819 s** | **4.7 s** | **~1025×** | — | — |
+>
+> Same clustering — 809 vs 814 clusters at 200 k, noise within 0.3 points.
+> `fast_hdbscan` is by the authors of the original hdbscan package, is pure
+> numba (no compiler needed), and uses Boruvka over a KD-tree. kmer-dust prefers
+> it automatically and warns when it is missing.
+>
+> **`max_fit_rows` is a last resort, not the answer.** With the fast backend
+> installed you almost certainly do not need it.
 >
 > `max_fit_rows` fits a subsample and gives every other bin its nearest fitted
 > neighbour's label. Scored against the exact labelling of 200 k real rows
@@ -145,9 +160,8 @@ If the run comes back >90 % noise, lower `min_samples` before anything else.
 > condensed hierarchy is genuinely sensitive to which points are present.
 >
 > AMI near 0.7 says the broad structure survives, so it is a usable *coarse*
-> view — but it is a deliberate change of answer, not a free speed-up. For a run
-> too large to cluster exactly, prefer `method: dbscan`, which is O(n log n)
-> through a KD-tree on 2-D input.
+> view — but it is a deliberate change of answer, not a free speed-up, and with
+> `fast_hdbscan` installed the exact answer is cheaper than the approximation.
 
 ## `annotate:`
 

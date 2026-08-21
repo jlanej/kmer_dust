@@ -34,6 +34,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov", "ruff>=0.4"]
+# scikit-learn's HDBSCAN has no Boruvka MST, so it is O(n^2) even on a 2-D
+# embedding: 1.3M bins took 80 minutes. fast_hdbscan does the same clustering in
+# 4.7 s (ARI 0.83 where both are affordable). Optional so a bare install still
+# works -- just slowly.
+fast = ["fast_hdbscan>=0.2"]
 workflow = ["snakemake>=8.10", "snakemake-executor-plugin-slurm>=0.4"]
 
 [project.scripts]
