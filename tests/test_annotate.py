@@ -53,6 +53,7 @@ def make_bins(specs, assembly="A_pat") -> pd.DataFrame:
                 "source": "local",
                 "contig": chrom,
                 "chrom": chrom,
+                "placed": True,
                 "start": start,
                 "end": end,
                 "n_acgt": end - start,

@@ -384,3 +384,69 @@ def test_normalize_chrom_beats_a_synthetic_contig_name(tmp_path):
         assert [normalize_chrom(c) for c in src.contigs] == ["chr21"]
     finally:
         src.close()
+
+
+# --------------------------------------------------------------------------
+# UCSC placement: the distinction that decides whether ~1 Gb per haplotype is
+# analysed or silently discarded.
+# --------------------------------------------------------------------------
+
+PLACEMENT_CASES = [
+    # localised chromosomes: real coordinates
+    ("chr13", ("chr13", True)),
+    ("chr1", ("chr1", True)),
+    ("chrX", ("chrX", True)),
+    ("chrM", ("chrM", True)),
+    # chromosome known, position within it not -- coordinates are contig-local
+    ("chr13_JBHIKM010000006.1_random", ("chr13", False)),
+    ("chr21_JBHIKM010000017.1_random", ("chr21", False)),
+    ("chr1_KI270706v1_random", ("chr1", False)),
+    ("chrX_KI270880v1_alt", ("chrX", False)),
+    # chromosome genuinely unknown
+    ("chrUn_JBHIKM010000019.1", ("", False)),
+    ("chrUn_GL000195v1", ("", False)),
+    # not a chromosome name at all
+    ("scaffold_00007", ("", False)),
+    ("JAGYYT010000042.1", ("", False)),
+    ("", ("", False)),
+    ("chrEBV", ("", False)),
+]
+
+
+@pytest.mark.parametrize("raw,expected", PLACEMENT_CASES, ids=[c[0] or "empty" for c in PLACEMENT_CASES])
+def test_parse_ucsc_placement(raw, expected):
+    from kmer_dust.fasta import parse_ucsc_placement
+
+    assert parse_ucsc_placement(raw) == expected
+
+
+def test_a_random_contig_keeps_its_chromosome_but_not_its_coordinates():
+    """The whole point of the second element.
+
+    `chr13_..._random` really is chr13 -- the assembler said so -- so it belongs
+    in a chr13 run. But its `start` is an offset into that contig, not into
+    chr13, so anything reasoning about genomic position has to be able to tell
+    the two apart.
+    """
+    from kmer_dust.fasta import parse_ucsc_placement
+
+    chrom, placed = parse_ucsc_placement("chr13_JBHIKM010000006.1_random")
+    assert chrom == "chr13", "the chromosome assignment must survive"
+    assert placed is False, "but it must not claim chromosome coordinates"
+
+
+def test_placement_never_invents_a_chromosome():
+    """The safety property: a bare accession still resolves to nothing."""
+    from kmer_dust.fasta import parse_ucsc_placement
+
+    for raw in ("CM085953.1", "HG00408#1#CM085953.1", "JAGYYT010000042.1", "scaffold_7"):
+        assert parse_ucsc_placement(raw) == ("", False)
+
+
+def test_placement_agrees_with_normalize_chrom_on_clean_names():
+    from kmer_dust.fasta import normalize_chrom, parse_ucsc_placement
+
+    for raw in ("chr1", "chr22", "chrX", "chrY", "chrM", "1", "X", "MT"):
+        chrom, placed = parse_ucsc_placement(raw)
+        assert chrom == normalize_chrom(raw)
+        assert placed is bool(chrom)

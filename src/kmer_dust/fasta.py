@@ -300,6 +300,43 @@ def normalize_chrom(name: str) -> str:
     return ""
 
 
+_UCSC_RANDOM = re.compile(r"^(chr(?:\d{1,2}|[XYM]|MT))_[^\s]*_(?:random|alt|fix)$", re.IGNORECASE)
+_UCSC_UNKNOWN = re.compile(r"^chrUn[_.]", re.IGNORECASE)
+
+
+def parse_ucsc_placement(name: str) -> tuple[str, bool]:
+    """``(chromosome, is_localised)`` for a UCSC-style sequence name.
+
+    HPRC chromAlias files use three shapes, and collapsing them loses the thing
+    this pipeline most wants to look at::
+
+        chr13                              -> ("chr13", True)   placed
+        chr13_JBHIKM010000006.1_random     -> ("chr13", False)  chromosome known, position not
+        chrUn_JBHIKM010000019.1            -> ("",      False)  chromosome unknown
+
+    The middle case is 34 % of the assembled sequence in a typical release-2
+    haplotype -- ~1 Gb per assembly -- and it is not junk.  It is precisely the
+    unlocalised, repeat-rich material (satellite arrays, rDNA, the acrocentric
+    short arms) that resists placement *because* it is repetitive, which is the
+    same reason it is interesting here.  Treating it as unplaced throws away the
+    chromosome assignment that the assembler was confident enough to record.
+
+    The second element is what keeps that honest downstream: a ``_random``
+    contig's coordinates are contig-local, not chromosome-local, so any analysis
+    that reasons about genomic position must restrict itself to localised bins.
+    """
+    text = str(name or "").strip()
+    if not text:
+        return "", False
+    if _UCSC_UNKNOWN.match(text):
+        return "", False
+    match = _UCSC_RANDOM.match(text)
+    if match:
+        return normalize_chrom(match.group(1)), False
+    chrom = normalize_chrom(text)
+    return chrom, bool(chrom)
+
+
 def load_chrom_alias(path_or_url: str, cache_dir: Path | None = None) -> dict[str, str]:
     """Read an HPRC ``.chromAlias.txt`` into ``{any alias -> UCSC name}``.
 

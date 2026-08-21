@@ -51,6 +51,7 @@ def build_case():
                 "source": source,
                 "contig": contig,
                 "chrom": chrom,
+                "placed": True,
                 "start": start,
                 "end": start + 10_000,
                 "n_acgt": 10_000,

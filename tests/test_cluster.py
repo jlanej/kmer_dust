@@ -33,6 +33,7 @@ def make_rows(n: int) -> pd.DataFrame:
             "source": "local",
             "contig": "chr21",
             "chrom": "chr21",
+            "placed": True,
             "start": np.arange(n) * 10_000,
             "end": np.arange(n) * 10_000 + 10_000,
             "n_acgt": 10_000,

@@ -52,6 +52,7 @@ def build_case(rng, n_noise=120):
                 "source": "local",
                 "contig": chrom,
                 "chrom": chrom,
+                "placed": True,
                 "start": start,
                 "end": start + 10_000,
                 "n_acgt": 10_000,

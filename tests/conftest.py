@@ -244,6 +244,7 @@ def write_sketch_shard(
                 "source": source,
                 "contig": contig,
                 "chrom": chrom,
+                "placed": True,
                 "start": start,
                 "end": start + bin_size,
                 "n_acgt": bin_size,
@@ -539,10 +540,29 @@ def smoke_run(tmp_path_factory: pytest.TempPathFactory):
 
 @pytest.fixture(autouse=True)
 def _deterministic_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Pin the thread counts that silently reorder floating-point reductions."""
+    """Pin the thread counts that silently reorder floating-point reductions.
+
+    The environment variables alone are not enough for *this* process: BLAS
+    reads them when numpy is imported, which already happened before any
+    fixture ran. They still matter, because the sketch stage's worker processes
+    inherit them. To pin the parent as well we go through threadpoolctl, which
+    sklearn already depends on and which changes the pools at runtime.
+
+    Without this the end-to-end smoke test is genuinely load-sensitive: a
+    different BLAS thread count reorders the reductions inside the randomized
+    SVD, the components shift in the last bits, and a planted cluster sitting
+    near the HDBSCAN threshold can land on either side of it. Observed once,
+    while an unrelated 8-thread job was saturating the machine.
+    """
     # NUMBA_NUM_THREADS is deliberately absent: numba refuses to change it
     # once a kernel has been compiled, which happens on the first sketch.
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         monkeypatch.setenv(var, "1")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
-    yield
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:  # pragma: no cover - sklearn pulls it in
+        yield
+        return
+    with threadpool_limits(limits=1):
+        yield

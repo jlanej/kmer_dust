@@ -440,3 +440,86 @@ def test_sketch_manifest_is_deterministic_across_thread_counts(synthetic_assembl
     for (b1, s1), (b2, s2) in zip(frames[0], frames[1]):
         pd.testing.assert_frame_equal(b1, b2)
         pd.testing.assert_frame_equal(s1, s2)
+
+
+def test_a_chromosome_run_includes_its_unlocalised_contigs(tmp_path, make_config):
+    """`chroms: [chr13]` must mean chr13, not "the contig literally named chr13".
+
+    In a real HPRC release-2 haplotype the chromAlias assigns roughly a third of
+    the assembled sequence to a chromosome *without* localising it within that
+    chromosome -- `chr13_JBHIKM010000006.1_random`. Dropping those contigs threw
+    away ~1 Gb per assembly of exactly the unlocalised, repeat-rich material
+    this pipeline is built to characterise.
+    """
+    import pandas as pd
+
+    from kmer_dust.sketch import sketch_assembly
+
+    rng = __import__("numpy").random.default_rng(11)
+    seq = "".join(rng.choice(list("ACGT"), 40_000))
+    fasta = tmp_path / "asm.fa"
+    fasta.write_text(
+        f">placed13\n{seq}\n>random13\n{seq[::-1]}\n>unknown\n{seq[5000:35000]}\n"
+    )
+    alias = tmp_path / "asm.chromAlias.txt"
+    alias.write_text(
+        "# assembly\tucsc\tgenbank\n"
+        "placed13\tchr13\tX1\n"
+        "random13\tchr13_JBHIKM010000006.1_random\tX2\n"
+        "unknown\tchrUn_JBHIKM010000019.1\tX3\n"
+    )
+
+    cfg = make_config()
+    cfg.manifest.chroms = ["chr13"]
+    cfg.sketch.bin_size = 10_000
+    cfg.sketch.min_bin_sketch = 0
+    cfg.sketch.include_unplaced = False
+    row = {
+        "assembly": "asm", "sample": "S", "haplotype": "hap1", "source": "local",
+        "fasta": str(fasta), "fai": "", "gzi": "", "chrom_alias": str(alias),
+    }
+    out = tmp_path / "sketch"
+    sketch_assembly(row, cfg, out, force=True)
+    bins = pd.read_parquet(out / "asm.bins.parquet")
+
+    contigs = set(bins["contig"])
+    assert "placed13" in contigs
+    assert "random13" in contigs, "an unlocalised chr13 contig belongs in a chr13 run"
+    assert "unknown" not in contigs, "chrUn_* has no chromosome; it needs include_unplaced"
+
+    assert set(bins["chrom"]) == {"chr13"}
+    by_contig = bins.groupby("contig")["placed"].agg(set)
+    assert by_contig["placed13"] == {True}
+    assert by_contig["random13"] == {False}, "contig-local coordinates must be flagged"
+
+
+def test_include_unplaced_adds_the_chromosome_less_contigs(tmp_path, make_config):
+    import pandas as pd
+
+    from kmer_dust.sketch import sketch_assembly
+
+    rng = __import__("numpy").random.default_rng(12)
+    seq = "".join(rng.choice(list("ACGT"), 40_000))
+    fasta = tmp_path / "asm.fa"
+    fasta.write_text(f">placed13\n{seq}\n>unknown\n{seq[::-1]}\n")
+    alias = tmp_path / "asm.chromAlias.txt"
+    alias.write_text(
+        "# assembly\tucsc\tgenbank\nplaced13\tchr13\tX1\nunknown\tchrUn_JBH1.1\tX2\n"
+    )
+    row = {
+        "assembly": "asm", "sample": "S", "haplotype": "hap1", "source": "local",
+        "fasta": str(fasta), "fai": "", "gzi": "", "chrom_alias": str(alias),
+    }
+    cfg = make_config()
+    cfg.manifest.chroms = ["chr13"]
+    cfg.sketch.bin_size = 10_000
+    cfg.sketch.min_bin_sketch = 0
+    cfg.sketch.include_unplaced = True
+
+    out = tmp_path / "sketch"
+    sketch_assembly(row, cfg, out, force=True)
+    bins = pd.read_parquet(out / "asm.bins.parquet")
+    assert "unknown" in set(bins["contig"])
+    unknown = bins[bins["contig"] == "unknown"]
+    assert set(unknown["chrom"]) == {""}
+    assert not unknown["placed"].any()

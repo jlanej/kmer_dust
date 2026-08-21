@@ -205,12 +205,30 @@ def stage_sketch(
     failed = summary[summary["status"] != "ok"] if "status" in summary else summary.iloc[:0]
     if len(failed):
         logger.error("%d assemblies failed to sketch:\n%s", len(failed), failed.to_string())
+    # An assembly that succeeds and produces nothing is the quieter failure, and
+    # the more common one: the requested chromosome simply has no entry in that
+    # haplotype's chromAlias, which is routine for the acrocentric short arms.
+    # It is not an error -- the run is still valid -- but silently dropping 40%
+    # of the cohort should never be something you discover from a later table.
+    empty = summary[summary["n_bins"] == 0] if "n_bins" in summary else summary.iloc[:0]
+    if len(empty):
+        chroms = ", ".join(ctx.cfg.manifest.chroms) or "any requested contig"
+        logger.warning(
+            "%d of %d assemblies produced no bins (no %s in their chromAlias): %s%s",
+            len(empty),
+            len(summary),
+            chroms,
+            ", ".join(empty["assembly"].astype(str).head(5)),
+            ", ..." if len(empty) > 5 else "",
+        )
     return StageResult(
         "sketch",
         0.0,
         {
             "shards": int(len(summary)),
             "failed": int(len(failed)),
+            "empty": int(len(empty)),
+            "contributing": int(len(summary) - len(empty)),
             "bins": int(summary.get("n_bins", 0).sum()) if len(summary) else 0,
             "hashes": int(summary.get("n_hashes", 0).sum()) if len(summary) else 0,
         },

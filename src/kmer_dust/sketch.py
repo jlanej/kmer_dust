@@ -40,7 +40,7 @@ import pandas as pd
 
 from . import schemas
 from .config import Config
-from .fasta import FastaSource, load_chrom_alias, normalize_chrom
+from .fasta import FastaSource, load_chrom_alias, normalize_chrom, parse_ucsc_placement
 from .hashing import (
     bin_base_stats,
     bin_valid_kmer_counts,
@@ -147,6 +147,9 @@ def _shard_params(cfg: Config) -> dict[str, int]:
         "min_bin_sketch": int(cfg.sketch.min_bin_sketch),
         "drop_partial_terminal_bin": bool(cfg.sketch.drop_partial_terminal_bin),
         "include_unplaced": bool(cfg.sketch.include_unplaced),
+        # Bump when BIN_COLUMNS changes: an old shard cannot satisfy the new
+        # contract, and silently reusing it would break the matrix build.
+        "bins_schema": 2,
         "chroms": sorted(str(c) for c in cfg.manifest.chroms),
     }
 
@@ -331,15 +334,21 @@ class _ContigAccumulator:
 # --------------------------------------------------------------------------
 
 
-def _chrom_of(contig: str, alias: Mapping[str, str]) -> str:
-    """Canonical chromosome for a contig, or ``""`` when it is unplaced.
+def _placement_of(contig: str, alias: Mapping[str, str]) -> tuple[str, bool]:
+    """``(chromosome, is_localised)`` for a contig; ``("", False)`` if unknown.
 
     The alias map is consulted first and its answer is authoritative: PanSN
     names like ``HG00408#1#CM085953.1`` carry a GenBank accession that only the
     assembly's own chromAlias file can resolve, and guessing is not an option.
+
+    A ``chrN_*_random`` alias yields ``("chrN", False)`` rather than being
+    discarded.  In a release-2 haplotype that shape covers roughly a third of
+    the assembled sequence -- ~1 Gb -- and it is the unlocalised, repeat-rich
+    material this pipeline exists to characterise.  The chromosome really is
+    known; only the position within it is not.
     """
     aliased = alias.get(contig, "")
-    return normalize_chrom(aliased) if aliased else normalize_chrom(contig)
+    return parse_ucsc_placement(aliased if aliased else contig)
 
 
 def _contig_filter(cfg: Config, alias: Mapping[str, str]):
@@ -352,7 +361,10 @@ def _contig_filter(cfg: Config, alias: Mapping[str, str]):
     include_unplaced = bool(cfg.sketch.include_unplaced)
 
     def keep(contig: str) -> bool:
-        chrom = _chrom_of(contig, alias)
+        # `chroms` selects by CHROMOSOME, not by placement: an unlocalised
+        # contig whose chromAlias says chr13 belongs to a chr13 run. Only
+        # contigs with no chromosome at all (chrUn_*) need include_unplaced.
+        chrom, _placed = _placement_of(contig, alias)
         if chrom and chrom in wanted:
             return True
         if contig in literal:
@@ -382,11 +394,12 @@ def _build_frames(
     bin_chunks: list[dict[str, np.ndarray]] = []
     contigs: list[str] = []
     chroms: list[str] = []
+    placeds: list[bool] = []
     hash_bin_chunks: list[np.ndarray] = []
     hash_chunks: list[np.ndarray] = []
     next_idx = 0
 
-    for contig, chrom, data in per_contig:
+    for contig, chrom, placed, data in per_contig:
         span = data["end"] - data["start"]
         n_acgt = data["n_acgt"]
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -421,6 +434,7 @@ def _build_frames(
         )
         contigs.extend([contig] * n_keep)
         chroms.extend([chrom] * n_keep)
+        placeds.extend([placed] * n_keep)
         next_idx += n_keep
 
     if not bin_chunks:
@@ -451,6 +465,7 @@ def _build_frames(
             "source": str(row.get("source", "") or ""),
             "contig": pd.array(contigs, dtype="string"),
             "chrom": pd.array(chroms, dtype="string"),
+            "placed": np.asarray(placeds, dtype=bool),
             "start": starts,
             "end": ends,
             "n_acgt": n_acgt,
@@ -540,7 +555,8 @@ def sketch_assembly(
                 return
             data = accumulator.finish(drop_partial=bool(cfg.sketch.drop_partial_terminal_bin))
             if data["start"].size:
-                per_contig.append((current, _chrom_of(current, alias), data))
+                chrom_, placed_ = _placement_of(current, alias)
+                per_contig.append((current, chrom_, placed_, data))
 
         for name, _length, block in stream:
             if selected is None and not keep_contig(name):

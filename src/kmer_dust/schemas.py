@@ -85,6 +85,12 @@ BIN_COLUMNS: Final[dict[str, str]] = {
     "source": "string",
     "contig": "string",  # name as it appears in the FASTA
     "chrom": "string",  # normalised chr name via chrom_alias, else '' (unplaced)
+    # True when the contig is a whole, localised chromosome, so `start`/`end`
+    # are genuine chromosome coordinates.  False for a `chrN_*_random` contig:
+    # the chromosome is known but the coordinates are contig-local, so anything
+    # reasoning about genomic *position* must filter on this.  See
+    # fasta.parse_ucsc_placement.
+    "placed": "bool",
     "start": "int64",  # 0-based, inclusive
     "end": "int64",  # 0-based, exclusive
     "n_acgt": "int64",  # unambiguous bases in the bin

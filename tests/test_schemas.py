@@ -93,6 +93,7 @@ def _bin_row(**over):
         "source": "local",
         "contig": "chr1",
         "chrom": "chr1",
+        "placed": True,
         "start": 0,
         "end": 10_000,
         "n_acgt": 9_000,
