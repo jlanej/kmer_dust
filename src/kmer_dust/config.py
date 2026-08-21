@@ -164,7 +164,15 @@ class AnnotateConfig:
     )
     assembly_tracks: list[str] = field(default_factory=lambda: ["censat", "repeatmasker", "segdup"])
     min_frac_for_dominant: float = 0.25
-    annotate_assemblies: bool = True
+    # Off by default. The pipeline's actual method is to annotate the REFERENCE
+    # and let cluster membership carry those labels onto assemblies that were
+    # never aligned to anything -- see backprop.infer_annotations. Measured on a
+    # 33-assembly acrocentric run, CHM13 was 3.2 % of the bins and still reached
+    # 96.8 % of clustered assembly bins. Per-assembly tracks are not needed for
+    # that; they exist so `cluster_transfer_report` can independently CHECK it,
+    # which is a validation run rather than the normal path, and which costs a
+    # ~167 MB RepeatMasker BED per haplotype.
+    annotate_assemblies: bool = False
 
 
 @dataclass

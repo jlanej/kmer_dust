@@ -361,3 +361,134 @@ def test_transfer_report_with_no_reference_rows(case, make_config, run_dir):
     )
     assert (report["n_ref_bins"] == 0).all()
     assert np.isfinite(report["asm_agreement"].fillna(0.0)).all()
+
+
+# --------------------------------------------------------------------------
+# Reference-only inference: the actual product. Annotate CHM13, let cluster
+# membership carry the labels onto assemblies that were never aligned.
+# --------------------------------------------------------------------------
+
+
+def _ref_and_asm(make_config, n_ref=6, n_asm=30, feature="hsat3"):
+    """One cluster: a few annotated reference bins, many unannotated assembly bins."""
+    import numpy as np
+
+    uids, source, hap = [], [], []
+    for i in range(n_ref):
+        uids.append(f"chm13v2.0|chr21|{i * 10000}")
+        source.append("t2t")
+        hap.append("ref")
+    for i in range(n_asm):
+        uids.append(f"HG1_pat|HG1#1#c|{i * 10000}")
+        source.append("hprc")
+        hap.append("pat")
+    rows = pd.DataFrame({"bin_uid": uids, "source": source, "haplotype": hap})
+    clusters = pd.DataFrame(
+        {
+            "bin_uid": uids,
+            "cluster": np.zeros(len(uids), dtype=np.int32),
+        }
+    )
+    ann = pd.DataFrame(
+        {
+            "bin_uid": uids,
+            # Only the reference is annotated -- annotate_assemblies is off.
+            "dominant_feature": [feature] * n_ref + ["unannotated"] * n_asm,
+        }
+    )
+    return rows, clusters, ann
+
+
+def test_assembly_bins_inherit_the_reference_label(make_config, run_dir):
+    from kmer_dust.backprop import infer_annotations
+
+    rows, clusters, ann = _ref_and_asm(make_config)
+    out = infer_annotations(rows, clusters, ann, make_config(), run_dir, force=True)
+
+    assert list(out.columns) == list(__import__("kmer_dust.backprop", fromlist=["INFERRED_COLUMNS"]).INFERRED_COLUMNS)
+    assert len(out) == len(rows)
+    assert (out["inferred_feature"] == "hsat3").all()
+    assert (out["support"] == 6).all()
+    assert (out["cluster_ref_bins"] == 6).all()
+    assert out["purity"].to_numpy() == pytest.approx(1.0)
+    assert not out["novel"].any()
+
+
+def test_a_cluster_with_no_reference_bin_is_flagged_novel(make_config, run_dir):
+    """Sequence the assemblies share with each other and not with CHM13.
+
+    That is a result, not a gap: it is the material a reference-based method
+    cannot see at all.
+    """
+    import numpy as np
+
+    from kmer_dust.backprop import infer_annotations
+
+    rows, clusters, ann = _ref_and_asm(make_config)
+    # Move the reference bins into their own cluster, leaving cluster 0 all-assembly.
+    is_ref = rows["source"].eq("t2t").to_numpy()
+    clusters["cluster"] = np.where(is_ref, 1, 0).astype(np.int32)
+
+    out = infer_annotations(rows, clusters, ann, make_config(), run_dir, force=True)
+    merged = out.merge(rows, on="bin_uid")
+
+    asm = merged[merged["source"] != "t2t"]
+    assert asm["novel"].all(), "a cluster with no reference bin must be flagged"
+    assert (asm["inferred_feature"] == "").all(), "and must not be given a label"
+    ref = merged[merged["source"] == "t2t"]
+    assert not ref["novel"].any()
+
+
+def test_noise_is_neither_labelled_nor_novel(make_config, run_dir):
+    import numpy as np
+
+    from kmer_dust.backprop import infer_annotations
+
+    rows, clusters, ann = _ref_and_asm(make_config)
+    clusters["cluster"] = np.full(len(rows), -1, dtype=np.int32)
+    out = infer_annotations(rows, clusters, ann, make_config(), run_dir, force=True)
+    assert (out["inferred_feature"] == "").all()
+    assert not out["novel"].any(), "noise is not a cluster; it cannot be novel"
+    assert (out["support"] == 0).all()
+
+
+def test_only_reference_bins_vote(make_config, run_dir):
+    """Even when assembly annotations exist, inference must ignore them.
+
+    Otherwise the table is a lookup of what we already knew rather than an
+    inference, and `cluster_transfer_report` would be scoring itself.
+    """
+    from kmer_dust.backprop import infer_annotations
+
+    rows, clusters, ann = _ref_and_asm(make_config, n_ref=3, n_asm=30, feature="hsat3")
+    # The assemblies loudly claim something else, and are outnumbered 10:1.
+    ann.loc[ann["bin_uid"].str.startswith("HG1_"), "dominant_feature"] = "line"
+
+    out = infer_annotations(rows, clusters, ann, make_config(), run_dir, force=True)
+    assert (out["inferred_feature"] == "hsat3").all()
+    assert (out["cluster_ref_bins"] == 3).all()
+
+
+def test_purity_reports_a_split_reference_vote(make_config, run_dir):
+    from kmer_dust.backprop import infer_annotations
+
+    rows, clusters, ann = _ref_and_asm(make_config, n_ref=4, n_asm=10)
+    ann.loc[:1, "dominant_feature"] = "hsat3"
+    ann.loc[2:3, "dominant_feature"] = "hsat3"
+    ann.loc[3, "dominant_feature"] = "bsat"  # 3 hsat3 : 1 bsat
+
+    out = infer_annotations(rows, clusters, ann, make_config(), run_dir, force=True)
+    assert (out["inferred_feature"] == "hsat3").all()
+    assert (out["support"] == 3).all()
+    assert (out["cluster_ref_bins"] == 4).all()
+    assert out["purity"].iloc[0] == pytest.approx(0.75)
+
+
+def test_inference_round_trips_through_disk(make_config, run_dir):
+    from kmer_dust.backprop import infer_annotations
+
+    rows, clusters, ann = _ref_and_asm(make_config)
+    first = infer_annotations(rows, clusters, ann, make_config(), run_dir, force=True)
+    assert (run_dir / "inferred.parquet").exists()
+    again = infer_annotations(rows, clusters, ann, make_config(), run_dir, force=False)
+    pd.testing.assert_frame_equal(first, again)

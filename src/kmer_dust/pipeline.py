@@ -330,11 +330,23 @@ def stage_backprop(ctx: RunContext, *, force: bool = False) -> StageResult:
     paths = backprop_mod.write_cluster_beds(
         ctx.rows, ctx.clusters, names, ctx.cfg, outdir, force=force
     )
+    inferred = backprop_mod.infer_annotations(
+        ctx.rows, ctx.clusters, ctx.annotations, ctx.cfg, outdir, force=force
+    )
     transfer = backprop_mod.cluster_transfer_report(
         ctx.rows, ctx.clusters, ctx.annotations, names, ctx.cfg, outdir
     )
+    labelled = int((inferred["inferred_feature"].astype(str) != "").sum()) if len(inferred) else 0
+    novel = int(inferred["novel"].sum()) if len(inferred) else 0
     return StageResult(
-        "backprop", 0.0, {"beds": len(paths), "clusters_compared": int(len(transfer))}
+        "backprop",
+        0.0,
+        {
+            "beds": len(paths),
+            "clusters_compared": int(len(transfer)),
+            "inferred": labelled,
+            "novel_bins": novel,
+        },
     )
 
 

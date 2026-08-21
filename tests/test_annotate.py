@@ -434,7 +434,7 @@ def test_annotate_bins_contract(local_tracks, make_config, run_dir):
         ],
         ignore_index=True,
     )
-    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"]})
+    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"], "annotate_assemblies": True})
     ann = annotate_bins(rows, local_tracks, cfg, run_dir)
     assert list(ann.columns) == list(schemas.ANNOTATION_ID_COLUMNS) + list(schemas.FEATURE_COLUMNS)
     for col, dtype in schemas.ANNOTATION_ID_COLUMNS.items():
@@ -449,7 +449,7 @@ def test_annotate_bins_contract(local_tracks, make_config, run_dir):
 
 def test_annotate_bins_values(local_tracks, make_config, run_dir):
     rows = make_bins([("chr21", s, s + 10_000) for s in range(0, 30_000, 10_000)], "A_pat")
-    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"]})
+    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"], "annotate_assemblies": True})
     ann = annotate_bins(rows, local_tracks, cfg, run_dir)
     assert ann.loc[0, "frac_hsat2"] == pytest.approx(1.0)
     assert ann.loc[1, "frac_bsat"] == pytest.approx(0.25)
@@ -465,7 +465,7 @@ def test_min_frac_for_dominant(local_tracks, make_config, run_dir):
     rows = make_bins([("chr21", 10_000, 20_000)], "A_pat")
     cfg = make_config(
         annotate={"reference_tracks": [], "assembly_tracks": ["censat"],
-                  "min_frac_for_dominant": 0.5}
+                  "min_frac_for_dominant": 0.5, "annotate_assemblies": True}
     )
     ann = annotate_bins(rows, local_tracks, cfg, run_dir)
     assert ann.loc[0, "frac_bsat"] == pytest.approx(0.25)
@@ -474,7 +474,7 @@ def test_min_frac_for_dominant(local_tracks, make_config, run_dir):
 
 def test_assembly_without_tracks_is_marked_unannotated(local_tracks, make_config, run_dir):
     rows = make_bins([("chr21", 0, 10_000)], "B_pat")
-    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"]})
+    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"], "annotate_assemblies": True})
     ann = annotate_bins(rows, local_tracks, cfg, run_dir)
     assert bool(ann.loc[0, "annotated"]) is False
     assert ann.loc[0, "dominant_feature"] == "unannotated"
@@ -482,7 +482,7 @@ def test_assembly_without_tracks_is_marked_unannotated(local_tracks, make_config
 
 
 def test_annotate_bins_on_empty_rows(local_tracks, make_config, run_dir):
-    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"]})
+    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"], "annotate_assemblies": True})
     ann = annotate_bins(make_bins([]), local_tracks, cfg, run_dir)
     assert len(ann) == 0
     assert list(ann.columns) == list(schemas.ANNOTATION_ID_COLUMNS) + list(schemas.FEATURE_COLUMNS)
@@ -490,7 +490,7 @@ def test_annotate_bins_on_empty_rows(local_tracks, make_config, run_dir):
 
 def test_annotate_bins_is_deterministic_and_restartable(local_tracks, make_config, run_dir):
     rows = make_bins([("chr21", s, s + 10_000) for s in range(0, 30_000, 10_000)], "A_pat")
-    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"]})
+    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"], "annotate_assemblies": True})
     first = annotate_bins(rows, local_tracks, cfg, run_dir)
     before = (run_dir / "annotations.parquet").stat().st_mtime_ns
     again = annotate_bins(rows, local_tracks, cfg, run_dir)
@@ -504,7 +504,7 @@ def test_annotate_bins_tolerates_a_broken_track_path(make_config, run_dir):
     manifest = manifest_from_shards([("A_pat", "A")])
     manifest.loc[:, "censat_bed"] = "/definitely/not/here.bed"
     rows = make_bins([("chr21", 0, 10_000)], "A_pat")
-    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"]})
+    cfg = make_config(annotate={"reference_tracks": [], "assembly_tracks": ["censat"], "annotate_assemblies": True})
     ann = annotate_bins(rows, manifest, cfg, run_dir)
     assert len(ann) == 1
     assert ann.loc[0, "dominant_feature"] == "unannotated"

@@ -402,7 +402,14 @@ def make_config(tmp_path: Path):
             "decompose": {"n_components": 8, "n_iter": 4},
             "embed": {"n_neighbors": 5, "min_dist": 0.05, "n_components": 2},
             "cluster": {"min_cluster_size": 5, "min_samples": 2},
-            "annotate": {"reference_tracks": [], "assembly_tracks": ["censat"]},
+            # The synthetic fixture has no reference row, so per-assembly
+            # annotation has to be switched on explicitly -- the pipeline
+            # default is reference-only.
+            "annotate": {
+                "reference_tracks": [],
+                "assembly_tracks": ["censat"],
+                "annotate_assemblies": True,
+            },
             "enrich": {"min_cluster_size": 3, "min_frac": 0.25, "top_features": 3},
             "report": {"embed_plotlyjs": False},
         }
@@ -508,7 +515,14 @@ def smoke_config(base: Path, manifest_path: Path) -> Config:
             "decompose": {"n_components": 8, "n_iter": 7},
             "embed": {"n_neighbors": 5, "min_dist": 0.05, "n_components": 2},
             "cluster": {"method": "hdbscan", "min_cluster_size": 5, "min_samples": 2},
-            "annotate": {"reference_tracks": [], "assembly_tracks": ["censat"]},
+            # The synthetic fixture has no reference row, so per-assembly
+            # annotation has to be switched on explicitly -- the pipeline
+            # default is reference-only.
+            "annotate": {
+                "reference_tracks": [],
+                "assembly_tracks": ["censat"],
+                "annotate_assemblies": True,
+            },
             "enrich": {"min_cluster_size": 3, "min_frac": 0.25, "top_features": 3},
             # True on purpose: the report claims to work offline, and the
             # only way to test that claim is to build the inlined version.
