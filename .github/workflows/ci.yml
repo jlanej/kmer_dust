@@ -1,0 +1,197 @@
+name: ci
+
+# Four jobs, split by what they cost and what they prove:
+#   unit      lint + tests on every supported interpreter -- must always pass
+#   shell     shellcheck over the operator scripts -- cheap, catches typos that
+#             would only surface at 03:00 on a login node
+#   workflow  the Snakemake DAG builds for every shipped config
+#   smoke     the real thing, end to end, against live HPRC/S3 data
+#
+# Only `smoke` is allowed to fail: it depends on network egress to
+# raw.githubusercontent.com and s3-us-west-2.amazonaws.com, which forks and
+# restricted runners do not necessarily have.  Nothing that tests the code
+# itself is continue-on-error, because a test that cannot fail is not a test.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  schedule:
+    # Weekly, so that a change *upstream* -- a moved S3 object, a re-cut HPRC
+    # data table -- surfaces here rather than in someone's cluster run.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  unit:
+    name: unit (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor comes from requires-python; the ceiling from numba, which
+        # is always the last dependency to support a new interpreter.
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Ruff
+        run: ruff check --output-format=github .
+
+      - name: Tests
+        # Network-marked tests are excluded here and run in the `smoke` job.
+        run: pytest -m "not network" --cov=kmer_dust --cov-report=xml --cov-report=term-missing
+
+      - name: Validate the shipped run configs
+        # A config that no longer round-trips through Config.from_dict is a
+        # broken deliverable even when every unit test passes.
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from kmer_dust.config import Config
+          for path in sorted(Path("workflow/config").glob("*.yaml")):
+              cfg = Config.load(path)
+              print(f"ok {path}: run_name={cfg.run_name} chroms={len(cfg.manifest.chroms)}")
+          PY
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y shellcheck
+      - name: Check scripts
+        # The .sbatch files are bash despite the extension, hence the explicit
+        # shell dialect.
+        run: |
+          shellcheck --shell=bash scripts/*.sh hpc/*.sh hpc/*.sbatch
+      - name: Syntax-check with bash itself
+        run: |
+          for f in scripts/*.sh hpc/*.sh hpc/*.sbatch; do
+            bash -n "$f" && echo "ok $f"
+          done
+
+  workflow:
+    name: snakemake dag
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[workflow]'
+      - name: Dry-run every shipped config
+        # Builds the DAG through the manifest checkpoint for each preset. This
+        # is the gate; `snakemake --lint` is only a style opinion and is not
+        # run here (it objects to helper functions living beside rules).
+        run: |
+          for cfg in workflow/config/*.yaml; do
+            echo "::group::$cfg"
+            snakemake --snakefile workflow/Snakefile --configfile "$cfg" \
+                      --dry-run --quiet rules
+            echo "::endgroup::"
+          done
+
+  smoke:
+    name: real-data smoke
+    # Scheduled, manual and post-merge only. Pull requests skip it: they cannot
+    # reach the HPRC endpoints from a fork, and a 2-minute download on every
+    # push would not earn its keep.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: [unit, workflow]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # The ONLY continue-on-error in this file. See the header.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev,workflow]'
+
+      - name: Cache the test-data fixture
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/testdata
+            data/cache
+          # Keyed on the fetcher and on the slicing code it drives: either one
+          # changing can change which bytes end up on disk. Everything else
+          # about the fixture is pinned inside those two files.
+          key: kmer-dust-testdata-v1-${{ hashFiles('scripts/fetch_test_data.sh', 'src/kmer_dust/fetch.py', 'src/kmer_dust/catalog/*.py') }}
+          restore-keys: |
+            kmer-dust-testdata-v1-
+
+      - name: Fetch the fixture
+        run: scripts/fetch_test_data.sh
+
+      - name: Network-marked tests
+        env:
+          KMER_DUST_TEST_NETWORK: "1"
+        run: pytest -m network -v
+
+      - name: Smoke test (kmer-dust run)
+        run: scripts/smoke.sh --skip-fetch --force
+
+      - name: Smoke test (snakemake DAG)
+        run: scripts/smoke.sh --skip-fetch --snakemake --cores 2 --force
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: |
+            results/smoke/report/
+            results/smoke/logs/
+          if-no-files-found: ignore

@@ -1,0 +1,278 @@
+name: docker
+
+# Builds the batch image on every push and pull request, and publishes it to
+# GHCR on main and on tags.
+#
+# The image is built twice on purpose.  `docker/build-push-action` cannot both
+# push to a registry and load into the local daemon in one call, and the whole
+# point of this workflow is to *run* the thing before publishing it -- an image
+# that builds but cannot execute its own entrypoint is worse than no image.
+# The second build is a cache hit and takes seconds.
+#
+# linux/amd64 only: the deployment target is x86 HPC nodes running Apptainer.
+# Adding linux/arm64 would double the build time and pull in QEMU emulation for
+# numba/llvmlite, for an audience of laptops that can pip-install instead.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: build, test, publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive image name
+        id: image
+        # GHCR rejects uppercase path segments and GitHub usernames are not
+        # guaranteed lowercase, so normalise rather than assume.
+        run: |
+          owner="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${owner}/kmer-dust" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: kmer-dust:ci
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.image.outputs.created }}
+            SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---------------------------------------------------------------
+      # Prove the image actually runs, as a non-root uid it has never seen.
+      # ---------------------------------------------------------------
+      - name: Entrypoint responds
+        run: |
+          docker run --rm kmer-dust:ci --version
+          docker run --rm kmer-dust:ci --help > /dev/null
+
+      - name: Environment is sane under an arbitrary uid
+        # `--user` with the runner's own uid is the closest Docker equivalent of
+        # how Apptainer runs the image: an unknown, non-root user with no entry
+        # in /etc/passwd and no writable $HOME. If NUMBA_CACHE_DIR were still
+        # pointing inside site-packages, numba would fail to cache here.
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" kmer-dust:ci info | tee info.json
+          python - <<'PY'
+          import json, sys
+          info = json.load(open("info.json"))
+          print(json.dumps(info, indent=2))
+          if not info.get("numba_kernel"):
+              sys.exit("numba kernel unavailable in the image -- check NUMBA_CACHE_DIR")
+          for package in ("numpy", "scipy", "pandas", "pysam", "sklearn", "umap"):
+              value = str(info.get(package, ""))
+              if not value or value.startswith("unavailable"):
+                  sys.exit(f"{package} is {value or 'missing'} in the image")
+          PY
+
+      - name: Build synthetic fixtures
+        # Three tiny "assemblies" of tandem-repeat blocks separated by unique
+        # sequence, with a cenSat BED to match. Small enough to run in seconds,
+        # structured enough that every stage has something real to do -- an
+        # all-random fixture makes every bin identical and the clustering
+        # stages degenerate into a single blob that proves nothing.
+        run: |
+          mkdir -p fixtures
+          python - <<'PY'
+          import random
+          from pathlib import Path
+
+          OUT = Path("fixtures")
+          OUT.mkdir(parents=True, exist_ok=True)
+          BIN, N_BINS = 10_000, 60
+          LENGTH = BIN * N_BINS
+          COLUMNS = ["assembly", "sample", "haplotype", "source", "fasta", "fai", "gzi",
+                     "chrom_alias", "censat_bed", "repeatmasker_bed", "segdup_bed",
+                     "population", "superpopulation", "sex"]
+
+          def unit(rng, size):
+              return "".join(rng.choice("ACGT") for _ in range(size))
+
+          def mutate(rng, seq, rate):
+              chars = list(seq)
+              for i in range(len(chars)):
+                  if rng.random() < rate:
+                      chars[i] = rng.choice("ACGT")
+              return "".join(chars)
+
+          shared = random.Random(11)
+          HOR = unit(shared, 171)      # alpha-satellite-like monomer
+          HSAT = unit(shared, 25)      # short tandem unit
+
+          rows = []
+          for index in range(3):
+              rng = random.Random(100 + index)
+              name = f"SYN{index}"
+              contig = f"{name}#1#ctg1"
+              # 0-200 kb HOR array, 200-400 kb unique, 400-600 kb hsat2-like.
+              blocks = []
+              while sum(map(len, blocks)) < LENGTH // 3:
+                  blocks.append(mutate(rng, HOR, 0.02))
+              while sum(map(len, blocks)) < 2 * LENGTH // 3:
+                  blocks.append(unit(rng, 1000))
+              while sum(map(len, blocks)) < LENGTH:
+                  blocks.append(mutate(rng, HSAT, 0.01))
+              sequence = "".join(blocks)[:LENGTH]
+
+              fasta = OUT / f"{name}.fa"
+              with open(fasta, "w") as handle:
+                  handle.write(f">{contig}\n")
+                  for offset in range(0, len(sequence), 60):
+                      handle.write(sequence[offset:offset + 60] + "\n")
+
+              alias = OUT / f"{name}.chromAlias.txt"
+              alias.write_text(f"# assembly\tucsc\tgenbank\n{contig}\tchr1\tctg1\n")
+
+              censat = OUT / f"{name}.censat.bed"
+              censat.write_text(
+                  'track name="syn" visibility=2 itemRgb="On"\n'
+                  f"{contig}\t0\t{LENGTH // 3}\tactive_hor(S1C1H1L)\t0\t.\t0\t{LENGTH // 3}\t0,0,0\n"
+                  f"{contig}\t{2 * LENGTH // 3}\t{LENGTH}\thsat2\t0\t.\t"
+                  f"{2 * LENGTH // 3}\t{LENGTH}\t0,0,0\n"
+              )
+
+              rows.append({
+                  "assembly": name, "sample": name, "haplotype": "hap1", "source": "local",
+                  "fasta": f"/work/{fasta.name}", "fai": "", "gzi": "",
+                  "chrom_alias": f"/work/{alias.name}", "censat_bed": f"/work/{censat.name}",
+                  "repeatmasker_bed": "", "segdup_bed": "",
+                  "population": "SYN", "superpopulation": "SYN", "sex": "",
+              })
+
+          with open(OUT / "manifest.tsv", "w") as handle:
+              handle.write("\t".join(COLUMNS) + "\n")
+              for row in rows:
+                  handle.write("\t".join(row[c] for c in COLUMNS) + "\n")
+
+          (OUT / "config.yaml").write_text("""
+          run_name: docker-fixture
+          outdir: /work/results
+          datadir: /work/data
+          threads: 2
+          seed: 7
+          manifest:
+            source: file
+            path: /work/manifest.tsv
+            chroms: [chr1]
+            include_reference: false
+            require_annotations: []
+          sketch: {k: 31, bin_size: 10000, scaled: 10, min_bin_sketch: 5, threads: 2}
+          select: {min_sample_prevalence: 0.0, max_sample_prevalence: 1.0, min_bins: 1,
+                   max_features: 20000, n_buckets: 2}
+          decompose: {n_components: 8, n_oversamples: 6, n_iter: 3}
+          embed: {n_neighbors: 10, min_dist: 0.1, max_fit_rows: 10000}
+          cluster: {min_cluster_size: 5, min_samples: 3}
+          annotate: {reference_tracks: [], assembly_tracks: [censat]}
+          enrich: {min_cluster_size: 3}
+          report: {max_points: 10000}
+          """.replace("\n          ", "\n").lstrip())
+          print("fixtures:", sorted(p.name for p in OUT.iterdir()))
+          PY
+
+      - name: Run the pipeline inside the image
+        # /work is the image's WORKDIR and is world-writable; --user proves we
+        # never depend on being uid 1000.
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD/fixtures:/work" \
+            kmer-dust:ci run --config /work/config.yaml
+          for f in results/manifest.tsv results/matrix/matrix.npz results/embed/umap.npy \
+                   results/cluster/clusters.parquet results/report/kmer_dust_report.html \
+                   results/report/summary.json; do
+            test -s "fixtures/$f" || { echo "missing $f"; exit 1; }
+            echo "ok $f"
+          done
+          # The fixture has three designed blocks (HOR array, unique sequence,
+          # tandem repeat), so a healthy run recovers at least two clusters and
+          # does not call most of it noise. Deliberately loose: this is a
+          # deployment check, not a clustering-quality test.
+          python - <<'PY'
+          import sys
+          import pandas as pd
+          clusters = pd.read_parquet("fixtures/results/cluster/clusters.parquet")
+          labels = clusters["cluster"]
+          found = int(labels[labels >= 0].nunique())
+          noise = float((labels == -1).mean())
+          print(f"clusters={found} noise_fraction={noise:.3f} bins={len(clusters)}")
+          if found < 2:
+              sys.exit(f"expected >= 2 clusters from the fixture, got {found}")
+          if noise > 0.5:
+              sys.exit(f"more than half the fixture bins are noise ({noise:.2f})")
+          PY
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.image.outputs.created }}
+            SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Convert to a .sif with: \`hpc/build_sif.sh --image ${{ steps.image.outputs.name }}:latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"

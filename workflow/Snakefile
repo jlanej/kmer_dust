@@ -1,0 +1,600 @@
+# kmer-dust pipeline as a Snakemake 8 workflow.
+#
+# Every rule is exactly one `kmer-dust <stage> --config <yaml>` call, and the
+# *same* YAML drives both Snakemake and the CLI.  That is deliberate: the run is
+# reproducible from one file, and a stage can always be re-run by hand outside
+# Snakemake (see hpc/run_stage.sbatch) without a second, drifting copy of the
+# parameters.
+#
+#     snakemake --snakefile workflow/Snakefile \
+#               --configfile workflow/config/chr21.yaml \
+#               --profile workflow/profiles/slurm \
+#               --use-apptainer
+#
+# Snakemake-only knobs are passed with `--config k=v` (which merges *on top of*
+# the YAML without touching it) or through the environment, never by adding keys
+# to the YAML: kmer_dust.config.Config rejects unknown keys, and it must, so the
+# YAML stays a pure description of the science.
+#
+#     --config kmer_dust_config=path.yaml   path handed to `kmer-dust --config`
+#                                           (defaults to the --configfile)
+#     --config container=docker://...       image for `--use-apptainer`
+#     --config mem_scale=2.0                multiply every memory request
+#     --config runtime_scale=2.0            multiply every walltime request
+#     --config scatter_sketch=false         one sketch job instead of one per
+#                                           haplotype (see below)
+#     --config n_assemblies=8               override the size estimate (below)
+#     --config genome_bp=4000000            override the size estimate (below)
+#     --config kmer_dust_bin=/path/kmer-dust
+#
+# Resource requests are *derived* from the science parameters (how many
+# assemblies, how much sequence, how coarse the sketch) rather than hard-coded,
+# so smoke.yaml asks for gigabytes and full.yaml asks for hundreds without
+# anyone maintaining two tables.  They are estimates; `mem_scale` and the
+# escalating retry in workflow/profiles/slurm/config.yaml cover the rest.
+
+import csv
+import os
+import shlex
+from pathlib import Path
+
+
+# --------------------------------------------------------------------------
+# Where the config lives
+# --------------------------------------------------------------------------
+# `config` here is the parsed contents of the kmer-dust YAML (Snakemake loads
+# --configfile into it verbatim).  The CLI needs the *path*, which Snakemake
+# records on the workflow object.
+
+
+def _config_path() -> str:
+    explicit = config.get("kmer_dust_config") or os.environ.get("KMER_DUST_CONFIG", "")
+    if explicit:
+        return str(explicit)
+    files = list(getattr(workflow, "configfiles", []) or [])
+    if not files:
+        raise WorkflowError(
+            "no config file: pass --configfile workflow/config/<name>.yaml "
+            "(or --config kmer_dust_config=<path>)"
+        )
+    # The last --configfile wins in Snakemake's own merge order; match that.
+    return str(files[-1])
+
+
+CONFIG_FILE = _config_path()
+if not Path(CONFIG_FILE).is_file():
+    raise WorkflowError(f"kmer-dust config not found: {CONFIG_FILE}")
+
+# A *command*, not necessarily a single path: `python -m kmer_dust` is a valid
+# value, so it is split and re-quoted token by token rather than wrapped whole.
+KMER_DUST = shlex.join(
+    shlex.split(str(config.get("kmer_dust_bin", os.environ.get("KMER_DUST_BIN", "kmer-dust"))))
+)
+
+
+def flag(value, default: bool) -> bool:
+    """Snakemake's --config passes values through as strings, so bool("false")
+    would be True.  Accept the obvious spellings instead."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cli_scatters_sketch() -> bool:
+    """Does the installed CLI accept `kmer-dust sketch --assembly <id>`?
+
+    Compatibility shim.  Scattering needs a way to say "sketch exactly this
+    haplotype and nothing else"; without it, N parallel `kmer-dust sketch` jobs
+    would each walk the whole manifest and race each other.  Older builds of
+    the CLI only take --config, so probe once here rather than failing 400 jobs
+    in.  If the CLI is not reachable from the controller at all (a
+    container-only submission host), assume the scatter: `--config
+    scatter_sketch=false` is the one-flag fix, and silently collapsing a 465-way
+    scatter into a single job would be far more expensive to discover.
+    """
+    import subprocess
+
+    try:
+        probe = subprocess.run(
+            shlex.split(KMER_DUST) + ["sketch", "--help"],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return "--assembly" in (probe.stdout + probe.stderr)
+
+
+SCATTER_SKETCH = (
+    flag(config["scatter_sketch"], True)
+    if "scatter_sketch" in config
+    else _cli_scatters_sketch()
+)
+
+# The image used by --use-apptainer / --use-singularity.  Overridable because
+# most sites want a locally built .sif on a shared filesystem rather than a
+# GHCR pull from every compute node (see hpc/build_sif.sh).
+CONTAINER = str(
+    config.get(
+        "container",
+        os.environ.get("KMER_DUST_CONTAINER", "docker://ghcr.io/jlanej/kmer-dust:latest"),
+    )
+)
+
+OUTDIR = Path(str(config.get("outdir", "results/kmer-dust")))
+LOGDIR = OUTDIR / "logs"
+
+MANIFEST = OUTDIR / "manifest.tsv"
+SKETCH_DIR = OUTDIR / "sketch"
+# Leading underscore keeps this out of the {assembly} wildcard's namespace.
+SKETCH_ALL_MARKER = SKETCH_DIR / "_all.done"
+
+
+# --------------------------------------------------------------------------
+# Size estimates that drive the resource requests
+# --------------------------------------------------------------------------
+# Approximate CHM13v2.0 chromosome lengths.  Only ever used for *sizing* a job,
+# never for anything the science depends on, so being a few kb out is fine.
+CHROM_BP = {
+    "chr1": 248_387_328, "chr2": 242_696_752, "chr3": 201_105_948, "chr4": 193_574_945,
+    "chr5": 182_045_439, "chr6": 172_126_628, "chr7": 160_567_428, "chr8": 146_259_331,
+    "chr9": 150_617_247, "chr10": 134_758_134, "chr11": 135_127_769, "chr12": 133_324_548,
+    "chr13": 113_566_686, "chr14": 101_161_492, "chr15": 99_753_195, "chr16": 96_330_374,
+    "chr17": 84_276_897, "chr18": 80_542_538, "chr19": 61_707_364, "chr20": 66_210_255,
+    "chr21": 45_090_682, "chr22": 51_324_926, "chrX": 154_259_566, "chrY": 62_460_029,
+}
+_MEDIAN_CHROM_BP = 133_324_548
+
+_manifest_cfg = dict(config.get("manifest") or {})
+_sketch_cfg = dict(config.get("sketch") or {})
+_select_cfg = dict(config.get("select") or {})
+_embed_cfg = dict(config.get("embed") or {})
+_decompose_cfg = dict(config.get("decompose") or {})
+
+BIN_SIZE = int(_sketch_cfg.get("bin_size", 10_000))
+SCALED = int(_sketch_cfg.get("scaled", 200))
+N_BUCKETS = int(_select_cfg.get("n_buckets", 16))
+MAX_FEATURES = int(_select_cfg.get("max_features", 200_000))
+N_COMPONENTS = int(_decompose_cfg.get("n_components", 64))
+MAX_FIT_ROWS = int(_embed_cfg.get("max_fit_rows", 400_000))
+N_NEIGHBORS = int(_embed_cfg.get("n_neighbors", 30))
+
+CHROMS = list(_manifest_cfg.get("chroms") or [])
+# Sequence length per haplotype.  For a `source: file` manifest of sliced or
+# non-human FASTA this is an over-estimate (it assumes whole chromosomes) and
+# the resource requests come out too large; `--config genome_bp=<n>` corrects
+# it.  Over-requesting only wastes a Slurm reservation, so erring high is the
+# safe default.
+GENOME_BP = int(
+    config.get("genome_bp", 0)
+    or sum(CHROM_BP.get(c, _MEDIAN_CHROM_BP) for c in CHROMS)
+    or 3_100_000_000
+)
+
+MEM_SCALE = float(config.get("mem_scale", 1.0))
+RUNTIME_SCALE = float(config.get("runtime_scale", 1.0))
+CFG_THREADS = int(config.get("threads", 4))
+SKETCH_THREADS = int(_sketch_cfg.get("threads", CFG_THREADS))
+
+
+def _count_manifest_rows(path: Path) -> int:
+    try:
+        with open(path, newline="") as handle:
+            return max(sum(1 for _ in csv.reader(handle, delimiter="\t")) - 1, 0)
+    except OSError:
+        return 0
+
+
+def estimate_n_assemblies() -> int:
+    """Best available guess at the number of haplotypes, at DAG-build time.
+
+    The real answer only exists after the ``manifest`` checkpoint, but Slurm
+    wants resources before that, so fall back through progressively vaguer
+    sources: an explicit override, an already-materialised manifest, a
+    file-source manifest, the configured caps, and finally the full release-2
+    haplotype count.
+    """
+    override = int(config.get("n_assemblies", 0))
+    if override:
+        return override
+    for candidate in (MANIFEST, Path(str(_manifest_cfg.get("path", "")))):
+        if str(candidate) and candidate.is_file():
+            n = _count_manifest_rows(candidate)
+            if n:
+                return n
+    capped = int(_manifest_cfg.get("max_assemblies", 0)) or 2 * int(
+        _manifest_cfg.get("max_samples", 0)
+    )
+    if capped:
+        return capped + (1 if _manifest_cfg.get("include_reference", True) else 0)
+    return 465  # HPRC release 2 v1.0: 464 haplotypes + CHM13v2.0
+
+
+N_ASSEMBLIES = max(estimate_n_assemblies(), 1)
+BINS_PER_ASM = max(GENOME_BP // max(BIN_SIZE, 1), 1)
+TOTAL_BINS = N_ASSEMBLIES * BINS_PER_ASM
+HASHES_PER_ASM = max(GENOME_BP // max(SCALED, 1), 1)
+TOTAL_HASHES = N_ASSEMBLIES * HASHES_PER_ASM
+# Sketch hashes retained per bin, and hence the row length of the matrix once
+# selection has thinned the columns.  Capped: a bin cannot contribute more
+# distinct k-mers than it has bases.
+HASHES_PER_BIN = max(min(BIN_SIZE // max(SCALED, 1), BIN_SIZE), 1)
+NNZ = TOTAL_BINS * HASHES_PER_BIN
+
+
+def mb(value: float, *, floor: int = 2_000, ceil: int = 900_000) -> int:
+    """Clamp a byte estimate (already in MB) into something Slurm will accept."""
+    return int(min(max(value * MEM_SCALE, floor), ceil))
+
+
+def minutes(value: float, *, floor: int = 15, ceil: int = 2_880) -> int:
+    return int(min(max(value * RUNTIME_SCALE, floor), ceil))
+
+
+def escalate(base_mb: int):
+    """Retry with 1.7x the memory each time -- see `retries` in the profile.
+
+    Memory is the failure mode that actually happens on these jobs (a
+    centromeric assembly with far more surviving k-mers than the estimate), and
+    it is the one Slurm reports unambiguously, so escalating on retry recovers
+    the run without a human in the loop.
+    """
+
+    def _resource(wildcards, attempt):
+        return int(base_mb * (1.7 ** (attempt - 1)))
+
+    return _resource
+
+
+# Per-stage estimates.  Each comment states the dominant allocation.
+# sketch: one 8 MB sequence block, its 2-bit codes and hashes for one assembly.
+MEM_SKETCH = mb(3_000 + HASHES_PER_ASM * 48 / 1e6)
+# select: pass 2 holds one radix bucket of (hash, sample, assembly, bin) tuples.
+MEM_SELECT = mb(4_000 + (TOTAL_HASHES / max(N_BUCKETS, 1)) * 32 / 1e6)
+# matrix: CSR indices+data at 8 B/nnz, roughly tripled while it is being built.
+MEM_MATRIX = mb(4_000 + NNZ * 8 * 3 / 1e6)
+# decompose: the matrix plus dense (n_rows x (k + oversamples)) float32 blocks.
+MEM_DECOMPOSE = mb(4_000 + NNZ * 8 / 1e6 + TOTAL_BINS * (N_COMPONENTS + 20) * 4 * 3 / 1e6)
+# embed: UMAP's kNN graph over the fit subsample dominates.
+MEM_EMBED = mb(
+    4_000
+    + TOTAL_BINS * N_COMPONENTS * 4 / 1e6
+    + min(TOTAL_BINS, MAX_FIT_ROWS) * N_NEIGHBORS * 16 * 4 / 1e6
+)
+MEM_CLUSTER = mb(4_000 + min(TOTAL_BINS, MAX_FIT_ROWS) * N_NEIGHBORS * 16 * 2 / 1e6)
+# annotate: interval tables per assembly, plus one float32 column per feature.
+MEM_ANNOTATE = mb(4_000 + TOTAL_BINS * 30 * 4 / 1e6)
+MEM_TABULAR = mb(4_000 + TOTAL_BINS * 200 / 1e6)  # enrich / backprop / report
+
+# Walltime.  Sketching is I/O bound on remote FASTA and is by far the slowest
+# per-unit-work stage, so it gets the most generous allowance.
+RT_SKETCH = minutes(20 + GENOME_BP / 2e6 / max(SKETCH_THREADS, 1))
+RT_SELECT = minutes(20 + TOTAL_HASHES / 4e6)
+RT_MATRIX = minutes(20 + NNZ / 5e6)
+RT_DECOMPOSE = minutes(20 + TOTAL_BINS * N_COMPONENTS / 2e7)
+RT_EMBED = minutes(30 + min(TOTAL_BINS, MAX_FIT_ROWS) / 2e4)
+RT_TABULAR = minutes(15 + TOTAL_BINS / 1e6)
+
+
+wildcard_constraints:
+    # Assembly ids are HPRC assembly_name values (HG00408_pat_hprc_r2_v1.0.1)
+    # or "chm13v2.0"; no separators that would swallow a path component.
+    assembly=r"[A-Za-z0-9][A-Za-z0-9._+-]*",
+
+
+def stage(name: str, extra: str = "") -> str:
+    """Shell body for one pipeline stage.
+
+    ``rm -f`` is not belt-and-braces: every kmer-dust stage is restartable and
+    skips work whose output already exists, so a Snakemake-decided rerun
+    (--forcerun, a changed input, a corrected config) would otherwise be a
+    no-op.  Snakemake only schedules a job when it wants the outputs rebuilt,
+    so clearing exactly those outputs first is the correct handshake.
+    """
+    return (
+        "rm -f {output} && "
+        + f"{KMER_DUST} {name} --config {shlex.quote(CONFIG_FILE)} {extra}".rstrip()
+        + " > {log} 2>&1"
+    )
+
+
+def log_for(name: str) -> str:
+    """One log file per stage.  Snakemake creates the parent directory."""
+    return str(LOGDIR / f"{name}.log")
+
+
+# --------------------------------------------------------------------------
+# Rules
+# --------------------------------------------------------------------------
+
+localrules:
+    all,
+
+
+rule all:
+    input:
+        OUTDIR / "report" / "kmer_dust_report.html",
+        OUTDIR / "report" / "summary.json",
+        OUTDIR / "backprop" / "clusters.all.bed.gz",
+
+
+# A checkpoint, not a plain rule: the set of assemblies -- and therefore the
+# number of sketch jobs -- is only known after the manifest has been resolved
+# against the HPRC data tables and every filter in ManifestConfig applied.
+checkpoint manifest:
+    output:
+        manifest=MANIFEST,
+    log:
+        log_for("manifest"),
+    resources:
+        mem_mb=escalate(mb(2_000)),
+        runtime=minutes(30),
+        cpus_per_task=1,
+    threads: 1
+    container:
+        CONTAINER
+    shell:
+        stage("manifest")
+
+
+def sketched_assemblies(wildcards=None) -> list[str]:
+    """Assembly ids from the checkpoint's manifest, in file order."""
+    path = checkpoints.manifest.get().output.manifest
+    assemblies: list[str] = []
+    with open(path, newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            name = (row.get("assembly") or "").strip()
+            if name:
+                assemblies.append(name)
+    if not assemblies:
+        raise WorkflowError(
+            f"{path} contains no assemblies -- loosen the manifest filters in {CONFIG_FILE}"
+        )
+    return assemblies
+
+
+def sketch_markers(wildcards=None) -> list[str]:
+    if not SCATTER_SKETCH:
+        return [str(SKETCH_ALL_MARKER)]
+    return [str(SKETCH_DIR / f"{a}.done") for a in sketched_assemblies()]
+
+
+# The real scatter: one Slurm job per haplotype.  Each writes only its own
+# <assembly>.* files into the shared sketch/ directory, so the jobs never race.
+# This is where essentially all of a full run's wall time goes, so it is the
+# one rule whose parallelism actually matters.
+rule sketch:
+    input:
+        manifest=MANIFEST,
+    output:
+        done=SKETCH_DIR / "{assembly}.done",
+    log:
+        str(LOGDIR / "sketch" / "{assembly}.log"),
+    resources:
+        mem_mb=escalate(MEM_SKETCH),
+        runtime=RT_SKETCH,
+        cpus_per_task=SKETCH_THREADS,
+    threads: SKETCH_THREADS
+    container:
+        CONTAINER
+    shell:
+        stage("sketch", "--assembly {wildcards.assembly}")
+
+
+# Fallback for a CLI without --assembly: one job that sketches every haplotype
+# in sequence.  Correct, restartable (the stage skips assemblies that already
+# have a .done marker) and hours slower on a real run.
+rule sketch_all:
+    input:
+        manifest=MANIFEST,
+    output:
+        done=SKETCH_ALL_MARKER,
+    log:
+        log_for("sketch"),
+    resources:
+        mem_mb=escalate(MEM_SKETCH),
+        runtime=minutes(RT_SKETCH * max(N_ASSEMBLIES, 1)),
+        cpus_per_task=SKETCH_THREADS,
+    threads: SKETCH_THREADS
+    container:
+        CONTAINER
+    shell:
+        "rm -f {output} && "
+        + f"{KMER_DUST} sketch --config {shlex.quote(CONFIG_FILE)}"
+        + " > {log} 2>&1 && touch {output}"
+
+
+rule select:
+    input:
+        manifest=MANIFEST,
+        sketches=sketch_markers,
+    output:
+        kmers=OUTDIR / "kmers" / "kmers.parquet",
+        prevalence=OUTDIR / "kmers" / "prevalence.parquet",
+    log:
+        log_for("select"),
+    resources:
+        mem_mb=escalate(MEM_SELECT),
+        runtime=RT_SELECT,
+        cpus_per_task=1,
+    threads: 1
+    container:
+        CONTAINER
+    shell:
+        stage("select")
+
+
+rule matrix:
+    input:
+        manifest=MANIFEST,
+        kmers=rules.select.output.kmers,
+        sketches=sketch_markers,
+    output:
+        matrix=OUTDIR / "matrix" / "matrix.npz",
+        rows=OUTDIR / "matrix" / "rows.parquet",
+    log:
+        log_for("matrix"),
+    resources:
+        mem_mb=escalate(MEM_MATRIX),
+        runtime=RT_MATRIX,
+        cpus_per_task=1,
+    threads: 1
+    container:
+        CONTAINER
+    shell:
+        stage("matrix")
+
+
+rule decompose:
+    input:
+        matrix=rules.matrix.output.matrix,
+        rows=rules.matrix.output.rows,
+    output:
+        pcs=OUTDIR / "decompose" / "pcs.npy",
+        svd=OUTDIR / "decompose" / "svd.json",
+    log:
+        log_for("decompose"),
+    resources:
+        mem_mb=escalate(MEM_DECOMPOSE),
+        # randomized_svd is the one stage that genuinely benefits from threaded
+        # BLAS, so it asks for the run-wide thread count.  The container pins
+        # OMP_NUM_THREADS=1; the profile exports it from cpus_per_task.
+        runtime=RT_DECOMPOSE,
+        cpus_per_task=CFG_THREADS,
+    threads: CFG_THREADS
+    container:
+        CONTAINER
+    shell:
+        stage("decompose")
+
+
+rule embed:
+    input:
+        pcs=rules.decompose.output.pcs,
+    output:
+        umap=OUTDIR / "embed" / "umap.npy",
+    log:
+        log_for("embed"),
+    resources:
+        mem_mb=escalate(MEM_EMBED),
+        runtime=RT_EMBED,
+        cpus_per_task=CFG_THREADS,
+    threads: CFG_THREADS
+    container:
+        CONTAINER
+    shell:
+        stage("embed")
+
+
+rule cluster:
+    input:
+        umap=rules.embed.output.umap,
+        rows=rules.matrix.output.rows,
+    output:
+        clusters=OUTDIR / "cluster" / "clusters.parquet",
+    log:
+        log_for("cluster"),
+    resources:
+        mem_mb=escalate(MEM_CLUSTER),
+        runtime=RT_EMBED,
+        cpus_per_task=CFG_THREADS,
+    threads: CFG_THREADS
+    container:
+        CONTAINER
+    shell:
+        stage("cluster")
+
+
+# annotate depends on the row table, not on clustering: it is the independent
+# evidence the clusters are later scored against.
+rule annotate:
+    input:
+        manifest=MANIFEST,
+        rows=rules.matrix.output.rows,
+    output:
+        annotations=OUTDIR / "annotate" / "annotations.parquet",
+    log:
+        log_for("annotate"),
+    resources:
+        mem_mb=escalate(MEM_ANNOTATE),
+        runtime=RT_TABULAR,
+        cpus_per_task=1,
+    threads: 1
+    container:
+        CONTAINER
+    shell:
+        stage("annotate")
+
+
+rule enrich:
+    input:
+        clusters=rules.cluster.output.clusters,
+        annotations=rules.annotate.output.annotations,
+    output:
+        enrichment=OUTDIR / "enrich" / "enrichment.parquet",
+        names=OUTDIR / "enrich" / "cluster_names.parquet",
+    log:
+        log_for("enrich"),
+    resources:
+        mem_mb=escalate(MEM_TABULAR),
+        runtime=RT_TABULAR,
+        cpus_per_task=1,
+    threads: 1
+    container:
+        CONTAINER
+    shell:
+        stage("enrich")
+
+
+rule backprop:
+    input:
+        clusters=rules.cluster.output.clusters,
+        names=rules.enrich.output.names,
+        annotations=rules.annotate.output.annotations,
+    output:
+        allbed=OUTDIR / "backprop" / "clusters.all.bed.gz",
+    log:
+        log_for("backprop"),
+    resources:
+        mem_mb=escalate(MEM_TABULAR),
+        runtime=RT_TABULAR,
+        cpus_per_task=1,
+    threads: 1
+    container:
+        CONTAINER
+    shell:
+        stage("backprop")
+
+
+rule report:
+    input:
+        umap=rules.embed.output.umap,
+        clusters=rules.cluster.output.clusters,
+        annotations=rules.annotate.output.annotations,
+        enrichment=rules.enrich.output.enrichment,
+        names=rules.enrich.output.names,
+        allbed=rules.backprop.output.allbed,
+        svd=rules.decompose.output.svd,
+    output:
+        html=OUTDIR / "report" / "kmer_dust_report.html",
+        summary=OUTDIR / "report" / "summary.json",
+    log:
+        log_for("report"),
+    resources:
+        mem_mb=escalate(MEM_TABULAR),
+        runtime=RT_TABULAR,
+        cpus_per_task=1,
+    threads: 1
+    container:
+        CONTAINER
+    shell:
+        stage("report")
+
+
+onsuccess:
+    print(f"kmer-dust: run complete, report at {OUTDIR / 'report' / 'kmer_dust_report.html'}")
+
+
+onerror:
+    print(f"kmer-dust: run failed; per-stage stderr is under {LOGDIR}")

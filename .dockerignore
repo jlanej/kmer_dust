@@ -1,0 +1,30 @@
+# Build context for docker/Dockerfile.
+#
+# The image only ever needs pyproject.toml, README.md, LICENSE, src/ and the
+# three preset configs, so this is written as "deny everything, then re-allow"
+# rather than as a blocklist.  A blocklist silently starts shipping whatever a
+# future commit adds -- and the things most likely to be added here are the
+# multi-gigabyte assembly downloads under data/ and the run outputs under
+# results/.
+
+*
+
+!pyproject.toml
+!README.md
+!LICENSE
+!src
+
+# `kmer-dust init-config --preset <name>` reads these at run time; the
+# Dockerfile copies them to /opt/kmer-dust/presets.  Re-allowing the directory
+# is not enough on its own -- docker needs the parent un-ignored too, which is
+# why both lines are here.
+!workflow
+!workflow/config
+!workflow/config/*.yaml
+
+# ...and nothing compiled, cached or downloaded from inside src/.
+**/__pycache__
+**/*.py[cod]
+**/*.so
+**/*.egg-info
+**/.DS_Store

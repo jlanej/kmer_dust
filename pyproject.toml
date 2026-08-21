@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kmer-dust"
+version = "0.1.0"
+description = "Alignment-free clustering of genomic bins across HPRC assemblies and T2T-CHM13 via FracMinHash k-mer sketches, randomized SVD, UMAP and HDBSCAN."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "kmer-dust contributors" }]
+keywords = ["genomics", "pangenome", "kmer", "HPRC", "T2T", "UMAP", "centromere"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.11",
+  "pandas>=2.0",
+  "pyarrow>=14",
+  "pysam>=0.22",
+  "scikit-learn>=1.4",
+  "umap-learn>=0.5.5",
+  "numba>=0.59",
+  "plotly>=5.20",
+  "typer>=0.12",
+  "PyYAML>=6.0",
+  "tqdm>=4.66",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov", "ruff>=0.4"]
+workflow = ["snakemake>=8.10", "snakemake-executor-plugin-slurm>=0.4"]
+
+[project.scripts]
+kmer-dust = "kmer_dust.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jlanej/kmer_dust"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kmer_dust = ["viz/*.html", "viz/*.css", "viz/*.js", "catalog/*.tsv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "network: test requires internet access",
+  "slow: long-running test",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer's whole API is `param: T = typer.Option(...)`; B008 is not actionable here.
+"src/kmer_dust/cli.py" = ["B008"]

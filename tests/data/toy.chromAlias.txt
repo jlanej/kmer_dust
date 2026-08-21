@@ -1,0 +1,6 @@
+# assembly	ucsc	genbank
+HG00408#1#CM085953.1	chr2	CM085953.1
+chr21	chr21	CM085972.1
+chr22	chr22	CM085973.1
+chrX	chrX	CM085974.1
+scaffold_00007		JAGYYT010000042.1

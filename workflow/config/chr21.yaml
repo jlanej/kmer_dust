@@ -1,0 +1,124 @@
+# chr21 exploration: the realistic single-chromosome run.
+#
+# chr21 is the cheapest chromosome that still contains everything interesting --
+# a large alpha-satellite HOR array, the acrocentric short arm with its rDNA and
+# subterminal satellite, and enough unique sequence for a control.  Roughly
+# 45 Mb x ~60 haplotypes ~= 270k bins; a few hours on 30-60 cores, ~64 GB peak.
+# Start here before committing to full.yaml.
+
+run_name: chr21
+outdir: results/chr21
+datadir: data
+threads: 8
+seed: 7
+
+manifest:
+  source: hprc_release2
+  chroms: [chr21]
+  # 30 samples x 2 haplotypes + CHM13.  Raise once the run has been shaken out;
+  # the cost is close to linear in haplotype count until `select`.
+  max_samples: 30
+  max_assemblies: 0
+  # Only haplotypes where chr21 is a single gapless sequence: a scaffolded
+  # chr21 has arbitrary N-runs, which move every downstream bin boundary and
+  # make bins from different haplotypes non-comparable.
+  require_t2t_chrom: true
+  # Without a cenSat track a haplotype contributes bins but no evidence, so it
+  # cannot take part in the enrichment step that judges the clustering.
+  require_annotations: [censat]
+  include_reference: true
+  populations: []
+  samples: []
+  exclude_samples: []
+  seed: 7
+
+sketch:
+  k: 31
+  bin_size: 10000
+  # 1/200 keeps ~50 hashes per 10 kb bin: enough signal for cosine similarity,
+  # small enough that the whole chromosome's sketches fit in memory.
+  scaled: 200
+  min_bin_acgt_frac: 0.5
+  min_bin_sketch: 5
+  include_unplaced: false
+  drop_partial_terminal_bin: true
+  threads: 8
+
+select:
+  # A k-mer present in <5% of samples is usually assembly noise or a private
+  # variant, so the floor is the filter that matters.  The ceiling is 1.0 on
+  # purpose: a k-mer shared by every *sample* is not a k-mer shared by every
+  # *bin*.  An HSat2 31-mer is present in all 232 donors and in ~0.1% of bins,
+  # which makes it one of the most discriminative columns in the matrix -- a
+  # 0.95 ceiling would delete exactly the repeat-family vocabulary the
+  # clustering exists to find.  Bin-level ubiquity is handled by idf below.
+  min_sample_prevalence: 0.05
+  max_sample_prevalence: 1.0
+  min_bins: 2
+  max_features: 200000
+  n_buckets: 16
+  seed: 7
+
+matrix:
+  # idf is what makes satellite arrays stand out: it down-weights the k-mers
+  # every bin carries and up-weights the array-specific ones.
+  weighting: idf
+  row_norm: l2
+  drop_empty_rows: true
+
+decompose:
+  n_components: 64
+  n_oversamples: 20
+  n_iter: 7
+  keep_components: true
+  # Component 0 tends to track how many k-mers survived in a bin (i.e. sequence
+  # complexity) rather than sequence identity.  Set to 1 if the UMAP is
+  # dominated by a complexity gradient instead of by repeat classes.
+  drop_first: 0
+  seed: 7
+
+embed:
+  n_neighbors: 30
+  min_dist: 0.05
+  metric: cosine
+  n_components: 2
+  max_fit_rows: 400000
+  # Setting UMAP's random_state pins it to a single thread, which makes this
+  # the slowest stage of the run.  Keep it true for anything you will publish;
+  # flip it (and let n_jobs default to `threads`) while you are still tuning.
+  deterministic: true
+  n_jobs: 0
+  seed: 7
+
+cluster:
+  method: hdbscan
+  space: embedding
+  # ~50 bins = 500 kb of one haplotype, or one 10 kb locus seen in 50
+  # haplotypes.  Lower it to split HOR arrays further; raise it if the report
+  # is a confetti of singleton clusters.
+  min_cluster_size: 50
+  min_samples: 10
+  cluster_selection_epsilon: 0.0
+  cluster_selection_method: eom
+  seed: 7
+
+annotate:
+  # gene is the GENCODE liftoff GFF3 (~150 MB) and repeatmasker is ~340 MB;
+  # both are cached under datadir after the first run.
+  reference_tracks: [censat, repeatmasker, segdup, telomere, gene]
+  assembly_tracks: [censat, repeatmasker, segdup]
+  min_frac_for_dominant: 0.25
+  annotate_assemblies: true
+
+enrich:
+  min_cluster_size: 10
+  min_frac: 0.25
+  top_features: 3
+
+report:
+  max_points: 300000
+  title: kmer-dust chr21
+  subtitle: HPRC release 2 haplotypes + T2T-CHM13v2.0, 10 kb bins
+  point_size: 3.0
+  embed_plotlyjs: true
+  seed: 7

@@ -1,0 +1,527 @@
+/* kmer-dust report stylesheet.
+   Dark-first: the plots are dense and colourful, so the page around them is kept
+   near-monochrome with a single warm accent.  Every colour is a custom property
+   so the theme toggle is one attribute flip and the plots can read the same
+   values back out via getComputedStyle. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0d0f12;
+  --panel: #14171c;
+  --panel-2: #191d23;
+  --line: #262b33;
+  --line-soft: #1e222a;
+  --ink: #e7eaee;
+  --ink-2: #c3c9d2;
+  --muted: #929ba7;
+  --accent: #d7a44f;
+  --accent-soft: rgba(215, 164, 79, 0.14);
+  --dim: rgba(231, 234, 238, 0.055);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 28px rgba(0, 0, 0, 0.32);
+  --grid: #1f242c;
+  --radius: 14px;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f6f4;
+  --panel: #ffffff;
+  --panel-2: #f2f3f5;
+  --line: #e3e5e9;
+  --line-soft: #edeef1;
+  --ink: #171a1f;
+  --ink-2: #3b424b;
+  --muted: #666e79;
+  --accent: #a06c12;
+  --accent-soft: rgba(160, 108, 18, 0.11);
+  --dim: rgba(23, 26, 31, 0.055);
+  --shadow: 0 1px 2px rgba(16, 20, 26, 0.06), 0 8px 24px rgba(16, 20, 26, 0.07);
+  --grid: #e8eaee;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------------- top bar ---------------- */
+
+.kd-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 26px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.kd-mark {
+  width: 11px; height: 11px; border-radius: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  flex: none;
+}
+
+.kd-topbar .kd-name {
+  font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
+}
+.kd-topbar .kd-sep { color: var(--muted); opacity: 0.5; }
+.kd-topbar .kd-tag { font-size: 12px; color: var(--muted); }
+.kd-topbar .kd-spacer { flex: 1 1 auto; }
+
+.kd-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
+}
+.kd-btn:hover { border-color: var(--accent); color: var(--ink); }
+.kd-btn:active { transform: translateY(0.5px); }
+.kd-btn[disabled] { opacity: 0.45; cursor: default; }
+.kd-btn[disabled]:hover { border-color: var(--line); color: var(--ink-2); }
+
+/* ---------------- layout ---------------- */
+
+.kd-wrap {
+  max-width: 1520px;
+  margin: 0 auto;
+  padding: 34px 26px 80px;
+}
+
+.kd-hero { margin: 8px 0 30px; max-width: 78ch; }
+
+.kd-eyebrow {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.kd-hero h1 {
+  margin: 0;
+  font-size: 34px;
+  line-height: 1.15;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+
+.kd-sub { margin: 10px 0 0; color: var(--ink-2); font-size: 16px; }
+.kd-meta {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-family: var(--mono);
+}
+
+/* ---------------- stat tiles ---------------- */
+
+.kd-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+.kd-tile {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 13px 15px 14px;
+}
+.kd-tile .k {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+.kd-tile .v {
+  font-size: 25px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  margin-top: 5px;
+  line-height: 1.1;
+}
+.kd-tile .s { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.kd-tile.is-empty .v { color: var(--muted); font-weight: 500; }
+
+/* ---------------- cards ---------------- */
+
+.kd-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px 22px 22px;
+  margin-bottom: 22px;
+  box-shadow: var(--shadow);
+}
+
+.kd-card > header {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.kd-card h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+
+.kd-card .kd-desc {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 92ch;
+}
+
+.kd-num {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ---------------- notes ---------------- */
+
+.kd-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+}
+.kd-note {
+  display: flex;
+  gap: 9px;
+  align-items: baseline;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--accent);
+  border-radius: 7px;
+  padding: 7px 12px;
+}
+.kd-note b { color: var(--accent); font-weight: 600; }
+
+/* ---------------- controls ---------------- */
+
+.kd-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 4px 0 14px;
+}
+
+.kd-field { display: flex; align-items: center; gap: 8px; }
+.kd-field label {
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.kd-select {
+  appearance: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 30px 6px 11px;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.kd-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.kd-status {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-left: auto;
+}
+.kd-status.is-active { color: var(--accent); }
+
+/* ---------------- main view ---------------- */
+
+.kd-mainview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 232px;
+  gap: 18px;
+  align-items: stretch;
+}
+
+@media (max-width: 900px) {
+  .kd-mainview { grid-template-columns: minmax(0, 1fr); }
+}
+
+.kd-plot { width: 100%; min-height: 260px; }
+#kd-umap { height: 620px; }
+#kd-heatmap { height: 520px; }
+
+.kd-key {
+  border-left: 1px solid var(--line-soft);
+  padding-left: 16px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+@media (max-width: 900px) {
+  .kd-key { border-left: none; border-top: 1px solid var(--line-soft); padding: 14px 0 0; }
+}
+
+.kd-key h3 {
+  margin: 0 0 10px;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.kd-legend {
+  overflow-y: auto;
+  max-height: 540px;
+  margin: 0;
+  padding: 0 4px 0 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.kd-legend::-webkit-scrollbar { width: 8px; }
+.kd-legend::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+.kd-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--ink-2);
+  user-select: none;
+}
+.kd-legend li:hover { background: var(--panel-2); color: var(--ink); }
+.kd-legend li.is-on { background: var(--accent-soft); color: var(--ink); }
+.kd-legend li.is-muted { opacity: 0.42; }
+
+.kd-swatch {
+  width: 11px; height: 11px; border-radius: 3px; flex: none;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.kd-legend .lab {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kd-legend .cnt {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.kd-legend .more { color: var(--muted); font-style: italic; cursor: default; }
+.kd-legend .more:hover { background: none; }
+
+.kd-colorbar { margin-top: 4px; }
+.kd-colorbar .bar {
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+}
+.kd-colorbar .ticks {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.kd-colorbar .unit { font-size: 11.5px; color: var(--muted); margin-top: 9px; }
+
+.kd-hint {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.kd-hint kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* ---------------- table ---------------- */
+
+.kd-tablewrap { overflow-x: auto; }
+
+table.kd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+table.kd-table th {
+  text-align: right;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+table.kd-table th:first-child,
+table.kd-table td:first-child { text-align: left; }
+table.kd-table th.sorted { color: var(--accent); }
+table.kd-table th .arrow { opacity: 0.7; font-size: 9px; }
+table.kd-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: right;
+  white-space: nowrap;
+}
+table.kd-table tbody tr { cursor: pointer; }
+table.kd-table tbody tr:hover { background: var(--panel-2); }
+table.kd-table tbody tr.is-on { background: var(--accent-soft); }
+table.kd-table td.feat {
+  text-align: left;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  max-width: 30ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+table.kd-table td.name { font-weight: 560; }
+table.kd-table td.name .kd-swatch { margin-right: 8px; display: inline-block; vertical-align: -1px; }
+
+.kd-bar {
+  display: inline-block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--accent);
+  opacity: 0.65;
+  vertical-align: middle;
+  margin-left: 8px;
+}
+
+/* ---------------- methods ---------------- */
+
+.kd-methods p { margin: 0 0 12px; color: var(--ink-2); font-size: 13.5px; max-width: 88ch; }
+.kd-methods p:last-child { margin-bottom: 0; }
+.kd-methods code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 0.5px 4px;
+  color: var(--ink);
+}
+
+.kd-empty {
+  color: var(--muted);
+  font-size: 13px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 26px;
+  text-align: center;
+}
+
+footer.kd-foot {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-family: var(--mono);
+  border-top: 1px solid var(--line-soft);
+  padding-top: 16px;
+}
+
+/* ---------------- tooltip ---------------- */
+
+#kd-tooltip {
+  position: fixed;
+  z-index: 80;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.08s ease;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: var(--shadow);
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 340px;
+}
+#kd-tooltip.on { opacity: 1; }
+#kd-tooltip .t-head {
+  font-weight: 620;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 4px;
+}
+#kd-tooltip .t-row { color: var(--muted); }
+#kd-tooltip .t-row b { color: var(--ink-2); font-weight: 500; }
+#kd-tooltip .t-uid {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 5px;
+  word-break: break-all;
+}
+
+/* plotly's own hover layer is unused -- we draw the tooltip above. */
+.js-plotly-plot .plotly .modebar { opacity: 0.35; }
+.js-plotly-plot .plotly .modebar:hover { opacity: 1; }

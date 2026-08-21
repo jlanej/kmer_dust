@@ -1,0 +1,115 @@
+# Smoke run: end-to-end in well under a minute on a laptop.
+#
+# Inputs are the small *real* slices produced by scripts/fetch_test_data.sh --
+# a few Mb spanning the chr21 centromere from a handful of HPRC release-2
+# haplotypes plus the matching stretch of T2T-CHM13v2.0, sliced to local FASTA
+# with their cenSat annotation shifted to match.  Real data, toy size: this
+# catches contract breakage between stages, which synthetic sequence does not.
+#
+#     scripts/fetch_test_data.sh          # once; cached under data/testdata
+#     scripts/smoke.sh                    # or: kmer-dust run --config <this file>
+
+run_name: smoke
+outdir: results/smoke
+datadir: data
+threads: 2
+seed: 7
+
+manifest:
+  # Everything is already on disk; no HPRC data tables are consulted, so the
+  # smoke test stays green when GitHub or S3 are unreachable.
+  source: file
+  path: data/testdata/manifest.tsv
+  chroms: [chr21]
+  # The fixture manifest already contains a CHM13 row; adding the real
+  # reference here would pull ~45 Mb of chr21 over https every run.
+  include_reference: false
+  # Filters that would consult the HPRC catalogs: all off for a file manifest.
+  require_t2t_chrom: false
+  require_annotations: []
+  max_samples: 0
+  max_assemblies: 0
+
+sketch:
+  k: 31
+  bin_size: 10000
+  # 1/20 of k-mer space instead of the usual 1/200: with only a few Mb per
+  # haplotype a 1/200 sketch leaves too few hashes per bin to cluster at all.
+  scaled: 20
+  min_bin_acgt_frac: 0.5
+  min_bin_sketch: 5
+  include_unplaced: false
+  drop_partial_terminal_bin: true
+  threads: 2
+
+select:
+  # Prevalence filtering is meaningless across ~4 samples, so keep everything
+  # and let max_features do the thinning.  A real run must not do this.
+  min_sample_prevalence: 0.0
+  max_sample_prevalence: 1.0
+  min_bins: 1
+  max_features: 20000
+  n_buckets: 4  # must be a power of two
+  seed: 7
+
+matrix:
+  weighting: idf
+  row_norm: l2
+  drop_empty_rows: true
+
+decompose:
+  n_components: 8  # <= min(n_bins, n_features); a few hundred bins is all we have
+  n_oversamples: 10
+  n_iter: 4
+  keep_components: true
+  drop_first: 0
+  seed: 7
+
+embed:
+  # n_neighbors must stay below the bin count or UMAP silently degrades to a
+  # single connected blob.
+  n_neighbors: 10
+  min_dist: 0.1
+  metric: cosine
+  n_components: 2
+  max_fit_rows: 20000
+  seed: 7
+
+cluster:
+  method: hdbscan
+  space: embedding
+  # ~1600 bins in the fixture. Smaller than 20 and HDBSCAN shatters the HOR
+  # array into 150 near-identical clusters, which makes the report useless as
+  # an eyeball check that the run did something sensible.
+  min_cluster_size: 20
+  min_samples: 5
+  cluster_selection_epsilon: 0.0
+  cluster_selection_method: eom
+  seed: 7
+
+annotate:
+  # The fixture is in slice coordinates, so the genome-wide T2T tracks would be
+  # systematically off by the slice offset -- but `kmer-dust fetch` writes
+  # rebased cenSat/RepeatMasker/segdup BEDs for the CHM13 slice too, and
+  # annotate prefers a path spelled out in the manifest over the published URL.
+  # So the reference row is annotated from its own local tracks here, and the
+  # label-transfer report in backprop/ is a real measurement rather than an
+  # empty table.  (A run whose manifest has no local reference tracks falls
+  # back to catalog.t2t.T2T_TRACKS, which is what chr21.yaml and full.yaml do.)
+  reference_tracks: [censat, repeatmasker, segdup]
+  assembly_tracks: [censat, repeatmasker, segdup]
+  min_frac_for_dominant: 0.25
+  annotate_assemblies: true
+
+enrich:
+  min_cluster_size: 3
+  min_frac: 0.25
+  top_features: 3
+
+report:
+  max_points: 50000
+  title: kmer-dust smoke test
+  subtitle: chr21 centromere slices, HPRC release 2 + CHM13v2.0
+  point_size: 4.0
+  embed_plotlyjs: true
+  seed: 7

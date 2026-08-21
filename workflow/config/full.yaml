@@ -1,0 +1,163 @@
+# Full run: all 22 autosomes, every HPRC release-2 v1.0 haplotype, plus CHM13.
+#
+# Read the arithmetic before submitting this.  With 464 haplotypes + the
+# reference over ~2.87 Gb of autosome at 10 kb bins:
+#
+#   bins        465 x 287,000            ~= 1.3e8 rows
+#   sketch      2.87 Gb / scaled=2000    ~= 1.4e6 hashes per haplotype
+#   matrix      ~5 nonzeros per row      ~= 6.7e8 nnz  (~16 GB as CSR float32)
+#   decompose   1.3e8 x (64+20) float32  ~= 45 GB per dense block, x3 live
+#
+# So `decompose` and `embed` want a >=256 GB node, and `sketch` wants ~465 jobs
+# that each stream a whole assembly over https.  Two practical consequences:
+#
+#   * Run it under Snakemake with the Slurm profile.  Do not run `kmer-dust run`
+#     as one process -- the sketch scatter is where nearly all the wall time is.
+#   * If you cannot get a fat node, shard by chromosome: copy this file per
+#     chromosome (chroms: [chrN], outdir: results/full/chrN) and run 22
+#     independent workflows.  Clusters are then per-chromosome, which for
+#     satellite biology is usually what you wanted anyway.
+#
+# Expect low thousands of core-hours and a few TB of intermediate parquet under
+# `outdir`; point `outdir` at scratch, not at $HOME.
+
+run_name: full
+outdir: results/full
+datadir: data
+threads: 16
+seed: 7
+
+manifest:
+  source: hprc_release2
+  chroms:
+    - chr1
+    - chr2
+    - chr3
+    - chr4
+    - chr5
+    - chr6
+    - chr7
+    - chr8
+    - chr9
+    - chr10
+    - chr11
+    - chr12
+    - chr13
+    - chr14
+    - chr15
+    - chr16
+    - chr17
+    - chr18
+    - chr19
+    - chr20
+    - chr21
+    - chr22
+  max_samples: 0  # 0 == no cap: all 232 samples
+  max_assemblies: 0
+  # Deliberately false here, unlike chr21.yaml: requiring *every* autosome to be
+  # gapless would discard most of the release, and per-chromosome gaps are
+  # better handled by the min_bin_acgt_frac filter in `sketch`.
+  require_t2t_chrom: false
+  require_annotations: [censat]
+  include_reference: true
+  populations: []
+  samples: []
+  exclude_samples: []
+  seed: 7
+
+sketch:
+  k: 31
+  bin_size: 10000
+  # 1/2000 rather than the chr21 run's 1/200: at genome scale the sketch, not
+  # the matrix, is the memory wall. ~5 hashes per 10 kb bin is thin but the
+  # signal is recovered by having 464 haplotypes' worth of bins.
+  scaled: 2000
+  min_bin_acgt_frac: 0.5
+  # Lower than the chr21 run because scaled is 10x coarser; keep it >= 3 or
+  # cosine similarity between bins becomes mostly noise.
+  min_bin_sketch: 3
+  include_unplaced: false
+  drop_partial_terminal_bin: true
+  threads: 8
+
+select:
+  # The floor removes private variation and assembly artefacts.  The ceiling is
+  # 1.0 on purpose: a k-mer shared by every *sample* is not a k-mer shared by
+  # every *bin*, and the universally-carried satellite vocabulary is the most
+  # discriminative signal in the matrix.  idf below handles bin-level ubiquity.
+  min_sample_prevalence: 0.05
+  max_sample_prevalence: 1.0
+  min_bins: 2
+  # The single biggest lever on downstream memory: this is the column count of
+  # the matrix and the second dimension of components.npy.
+  max_features: 2000000
+  # More radix buckets than chr21: pass 2 loads one bucket at a time, so this
+  # divides the peak of the `select` job.
+  n_buckets: 64
+  seed: 7
+
+matrix:
+  weighting: idf
+  row_norm: l2
+  drop_empty_rows: true
+
+decompose:
+  n_components: 64
+  n_oversamples: 20
+  n_iter: 5  # each extra power iteration is another full pass over 6.7e8 nnz
+  # 45 GB of float32 that nothing downstream reads; only turn this on when you
+  # actually intend to inspect the k-mer loadings.
+  keep_components: false
+  drop_first: 0
+  seed: 7
+
+embed:
+  n_neighbors: 30
+  min_dist: 0.05
+  metric: cosine
+  n_components: 2
+  # UMAP is fitted on a seeded 1e6-row subsample and the remaining ~1.3e8 rows
+  # are transformed through it. Fitting on everything would not finish.
+  max_fit_rows: 1000000
+  # Setting UMAP's random_state pins it to a single thread, which makes this
+  # the slowest stage of the run.  Keep it true for anything you will publish;
+  # flip it (and let n_jobs default to `threads`) while you are still tuning.
+  deterministic: true
+  n_jobs: 0
+  seed: 7
+
+cluster:
+  method: hdbscan
+  space: embedding
+  # 500 bins = 5 Mb in one haplotype, or a 10 kb locus present in 500
+  # haplotype-copies. At 1.3e8 points anything smaller produces tens of
+  # thousands of clusters that no report can display.
+  min_cluster_size: 500
+  min_samples: 25
+  cluster_selection_epsilon: 0.0
+  cluster_selection_method: eom
+  seed: 7
+
+annotate:
+  # Every reference track is cached under datadir on first use; between
+  # RepeatMasker (~340 MB) and the GENCODE liftoff GFF3 (~150 MB) the first
+  # annotate job downloads about half a gigabyte.
+  reference_tracks: [censat, repeatmasker, segdup, telomere, gene]
+  assembly_tracks: [censat, repeatmasker, segdup]
+  min_frac_for_dominant: 0.25
+  annotate_assemblies: true
+
+enrich:
+  min_cluster_size: 50
+  min_frac: 0.25
+  top_features: 3
+
+report:
+  # Plotly renders ~3e5 points before the HTML becomes unusable in a browser;
+  # the report subsamples to this many.
+  max_points: 300000
+  title: kmer-dust autosomes
+  subtitle: HPRC release 2 v1.0 (464 haplotypes) + T2T-CHM13v2.0, 10 kb bins
+  point_size: 2.0
+  embed_plotlyjs: true
+  seed: 7

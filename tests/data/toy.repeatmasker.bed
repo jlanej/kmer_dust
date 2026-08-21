@@ -1,0 +1,10 @@
+chr21	10	320	AluSx	1000	+	SINE	Alu	8.4	1
+chr21	400	1100	L1HS	2400	-	LINE	L1	1.2	2
+chr21	1150	1190	(TTAGGG)n	300	+	Simple_repeat	Simple_repeat	4.0	3
+chr22	0	200	ALR/Alpha	900	+	Satellite	centr	12.0	4
+chr22	250	400	MER5A	400	-	DNA	hAT-Charlie	20.1	5
+chrX	5	90	MLT1A	500	+	LTR	ERVL-MaLR	15.3	6
+chrX	200	260	A-rich	200	+	Low_complexity	Low_complexity	3.0	7
+HG00408#1#CM085953.1	0	150	LSU-rRNA_Hsa	700	+	rRNA	rRNA	5.5	8
+HG00408#1#CM085953.1	300	380	SVA_E	800	-	Retroposon	SVA	6.6	9
+HG00408#1#CM085953.1	900	980	UCON29	250	+	Unknown	Unknown	25.0	10

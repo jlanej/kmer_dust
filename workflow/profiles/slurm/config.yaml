@@ -1,0 +1,97 @@
+# Snakemake profile for a Slurm cluster.
+#
+#     snakemake --snakefile workflow/Snakefile \
+#               --configfile workflow/config/chr21.yaml \
+#               --profile workflow/profiles/slurm
+#
+# Requires `pip install 'kmer-dust[workflow]'` (snakemake + the Slurm executor
+# plugin).  The Snakefile already derives mem_mb / runtime / cpus_per_task from
+# the science config, so the values here are only the floor for anything it did
+# not think of.
+#
+# ---------------------------------------------------------------------------
+# EDIT THESE FIRST -- everything else has a defensible default
+# ---------------------------------------------------------------------------
+#  * slurm_partition / slurm_account under default-resources: uncomment and set
+#    to your cluster's names.  Left commented so that clusters with a working
+#    default partition need no edit at all, and so that a wrong value fails at
+#    submission with a clear sbatch error rather than silently queueing forever.
+#  * apptainer-args: the bind mounts your data and scratch live on.  Apptainer
+#    binds $PWD, /tmp and $HOME by default; anything else (a /scratch or /data
+#    filesystem) must be listed or the container will not see it.
+#  * jobs: your queue's per-user limit.  The sketch stage will happily try to
+#    submit one job per haplotype (up to 465 including CHM13).
+# ---------------------------------------------------------------------------
+
+executor: slurm
+
+# Concurrent Slurm jobs.  This is the throttle for the sketch scatter; raise it
+# only as far as your fair-share and the HPRC S3 endpoint tolerate -- each
+# sketch job streams an assembly over https.
+jobs: 200
+
+# Cores the *controller* may use for local rules. The controller does almost
+# nothing itself, so keep this small; see hpc/submit.sbatch.
+local-cores: 2
+
+default-resources:
+  # - slurm_partition=general
+  # - slurm_account=my_allocation
+  # Extra sbatch flags that have no first-class resource, e.g.
+  # - slurm_extra="--qos=normal --constraint=avx512"
+  #
+  # Floors only: the Snakefile overrides all three per rule.
+  - mem_mb=4000
+  - runtime=120            # minutes -- the slurm plugin maps this to --time
+  - cpus_per_task=1
+  # Job-local scratch. Point at node-local SSD if your site provides one
+  # ($TMPDIR is usually already that); the pipeline writes radix buckets here.
+  - tmpdir=system_tmpdir
+
+# Per-rule overrides for the two stages whose cost is hardest to predict from
+# the config alone.  Uncomment and tune once you have seen a real run's sacct
+# output; the escalating retry below covers the meantime.
+# set-resources:
+#   - sketch:runtime=720
+#   - decompose:mem_mb=256000
+#   - embed:runtime=1440
+
+# Escalating retries.  The Snakefile multiplies mem_mb by 1.7 per attempt, so
+# 2 retries covers a ~3x underestimate -- which is roughly the spread between a
+# unique-sequence haplotype and one with a huge HOR array.  Beyond that the
+# estimate is wrong rather than unlucky and a human should look.
+retries: 2
+
+# Do not abandon 400 healthy sketch jobs because one assembly 404s at S3.
+keep-going: true
+
+# A job killed by the scheduler leaves half-written parquet behind; re-running
+# it is always cheaper than trusting it.
+rerun-incomplete: true
+
+# Shared filesystems lie about mtime for tens of seconds after a write. Without
+# this Snakemake declares perfectly good outputs missing.
+latency-wait: 60
+
+# Only mtime triggers a rerun. The default also includes code/params/input
+# checksums, which on a cluster means a trivial Snakefile edit re-runs 465
+# sketch jobs.
+rerun-triggers:
+  - mtime
+
+# Be polite to slurmctld: a few hundred queued jobs polling faster than this
+# will get you a talking-to from the sysadmins.
+max-jobs-per-second: 5
+max-status-checks-per-second: 1
+
+printshellcmds: true
+show-failed-logs: true
+
+# Containerisation. Comment `use-apptainer` out to run against a locally
+# installed kmer-dust instead (e.g. a module or a venv on the shared FS).
+use-apptainer: true
+# Where pulled/converted .sif files are cached. Must be on a filesystem the
+# compute nodes can read; the default (.snakemake/singularity) is fine if you
+# run from scratch, but not if you run from a no-exec home directory.
+# apptainer-prefix: /scratch/$USER/.apptainer
+apptainer-args: "--cleanenv --bind /tmp"
