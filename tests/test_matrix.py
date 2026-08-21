@@ -264,3 +264,54 @@ def test_no_bins_gives_a_zero_height_matrix(tmp_path, make_config, run_dir):
     assert mat.shape[0] == 0
     assert len(rows) == 0
     assert list(rows.columns) == list(schemas.BIN_COLUMNS) + ["row_idx"]
+
+
+def test_a_starved_feature_budget_is_warned_about(make_config, run_dir, caplog):
+    """The trap: `select.max_features` is absolute, eligible k-mers scale with the run.
+
+    A config tuned on 60k bins, reused on 1.3M bins, keeps the same 200k
+    features -- 11 % of the eligible vocabulary instead of most of it. The
+    matrix thins from ~44 non-zeros per row to ~5, most bin pairs then share no
+    feature at all, and the clustering degenerates while every stage still
+    reports success. Observed on a real acrocentric run.
+    """
+    import logging
+
+    import numpy as np
+    import scipy.sparse as sparse
+
+    from kmer_dust.matrix import MIN_HEALTHY_NNZ_PER_ROW, _warn_if_too_sparse
+
+    cfg = make_config()
+    cfg.sketch.bin_size = 10_000
+    cfg.sketch.scaled = 200
+    cfg.select.max_features = 200_000
+
+    rng = np.random.default_rng(0)
+    n_rows, n_cols = 2_000, 50_000
+
+    starved = sparse.random(
+        n_rows, n_cols, density=4 / n_cols, format="csr", random_state=rng
+    )
+    with caplog.at_level(logging.WARNING, logger="kmer_dust.matrix"):
+        _warn_if_too_sparse(starved.tocsr(), cfg)
+    assert any("selected k-mers per bin" in r.message for r in caplog.records)
+    assert any("max_features" in r.message for r in caplog.records)
+
+    caplog.clear()
+    healthy = sparse.random(
+        n_rows, n_cols, density=40 / n_cols, format="csr", random_state=rng
+    )
+    with caplog.at_level(logging.WARNING, logger="kmer_dust.matrix"):
+        _warn_if_too_sparse(healthy.tocsr(), cfg)
+    assert not caplog.records, "a healthy matrix must not warn"
+
+    assert MIN_HEALTHY_NNZ_PER_ROW == 10.0
+
+
+def test_the_sparsity_warning_tolerates_an_empty_matrix(make_config):
+    import scipy.sparse as sparse
+
+    from kmer_dust.matrix import _warn_if_too_sparse
+
+    _warn_if_too_sparse(sparse.csr_matrix((0, 0)), make_config())  # must not raise

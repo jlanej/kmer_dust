@@ -194,6 +194,46 @@ def _empty_rows_frame() -> pd.DataFrame:
 # --------------------------------------------------------------------------
 
 
+
+#: Below this many selected k-mers per bin the cosine geometry stops meaning
+#: anything: most pairs of bins share no feature at all, so their similarity is
+#: exactly zero and the embedding is dominated by ties.  Healthy runs observed
+#: so far sit at 40-45.
+MIN_HEALTHY_NNZ_PER_ROW = 10.0
+
+
+def _warn_if_too_sparse(matrix: sparse.csr_matrix, cfg: Config) -> None:
+    """Catch the failure mode where the feature budget did not scale with the run.
+
+    ``select.max_features`` is an absolute cap, but the number of *eligible*
+    k-mers grows with the amount of sequence in the run.  Take a config tuned on
+    60k bins to 1.3M bins and the same 200k cap now keeps 11 % of the eligible
+    vocabulary instead of most of it, the matrix thins from ~44 non-zeros per row
+    to ~5, and the clustering quietly degenerates -- with nothing in the log
+    saying so, because every stage still "succeeded".
+    """
+    n_rows = int(matrix.shape[0])
+    if n_rows == 0:
+        return
+    per_row = matrix.nnz / n_rows
+    if per_row >= MIN_HEALTHY_NNZ_PER_ROW:
+        return
+    expected = cfg.sketch.bin_size / max(cfg.sketch.scaled, 1)
+    logger.warning(
+        "matrix averages only %.1f selected k-mers per bin (a %d bp bin sketched at "
+        "scaled=%d holds ~%.0f). Most bin pairs now share nothing, so the cosine "
+        "geometry is mostly ties and the clustering will be poor. Raise "
+        "select.max_features (currently %s) so it scales with the %d bins in this "
+        "run, or lower sketch.scaled.",
+        per_row,
+        cfg.sketch.bin_size,
+        cfg.sketch.scaled,
+        expected,
+        cfg.select.max_features or "unlimited",
+        n_rows,
+    )
+
+
 def build_matrix(
     sketch_dir: Path,
     kmers: pd.DataFrame,
@@ -285,6 +325,7 @@ def build_matrix(
     )
     if matrix.shape[0] == 0:
         logger.warning("the matrix has no rows; every bin was empty or no shard was found")
+    _warn_if_too_sparse(matrix, cfg)
 
     _apply_weighting(matrix, cfg.matrix.weighting)
     _apply_row_norm(matrix, cfg.matrix.row_norm)

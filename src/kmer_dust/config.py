@@ -117,6 +117,35 @@ class EmbedConfig:
 
 @dataclass
 class ClusterConfig:
+    """HDBSCAN/DBSCAN settings.
+
+    ``max_fit_rows`` fits on a bounded subsample and gives every remaining bin
+    the label of its nearest fitted neighbour.  It defaults to **0 (off)**,
+    because it does not approximate the exact answer -- it produces a different,
+    coarser one.
+
+    The cost it addresses is real: scikit-learn's HDBSCAN is quadratic in n on
+    2-D input -- 2.0 s at 25k rows, 8.0 s at 50k, 31.3 s at 100k, 124.5 s at
+    200k, ~4x per doubling -- so 1.3M bins is ~88 minutes and 5M is most of a
+    day.  But measured against the exact labelling of 200k rows (832 clusters,
+    30.6 % noise):
+
+        fit 100k -> 465 clusters, 14.3 % noise, ARI 0.171, AMI 0.740
+        fit  50k -> 219 clusters, 14.7 % noise, ARI 0.084, AMI 0.679
+        fit  25k -> 117 clusters, 15.3 % noise, ARI 0.051, AMI 0.636
+
+    Scaling ``min_cluster_size``/``min_samples`` by the sampling fraction, to
+    keep the *density* criterion rather than the raw count comparable, does not
+    rescue it and at 50k makes it worse (1392 clusters, ARI 0.040): HDBSCAN's
+    condensed hierarchy is genuinely sensitive to which points are present.
+    AMI holding near 0.7 says the broad structure survives, so this is a usable
+    coarse view when exact is not an option -- but it is a deliberate change of
+    answer, not a free speed-up, so it must be asked for.
+
+    For a run too large to cluster exactly, prefer ``method: dbscan``, which is
+    O(n log n) through a KD-tree on a 2-D embedding.
+    """
+
     method: str = "hdbscan"  # hdbscan | dbscan
     space: str = "embedding"  # embedding | pcs
     min_cluster_size: int = 50
@@ -124,6 +153,7 @@ class ClusterConfig:
     cluster_selection_epsilon: float = 0.0
     cluster_selection_method: str = "eom"  # eom | leaf
     eps: float = 0.5  # dbscan only
+    max_fit_rows: int = 0  # 0 == fit on every row; see the note above before raising
     seed: int = 7
 
 

@@ -240,3 +240,73 @@ def test_an_unrelated_typeerror_is_not_reinterpreted(monkeypatch, make_config, r
     )
     with pytest.raises(TypeError, match="something else entirely"):
         cluster_mod.cluster(np.zeros((8, 2), dtype=np.float32), rows, cfg, run_dir, force=True)
+
+
+def test_max_fit_rows_is_off_by_default():
+    """It changes the answer, so it has to be asked for.
+
+    Measured against exact HDBSCAN on 200k rows of a real embedding (832
+    clusters, 30.6 % noise), fitting on 100k gives 465 clusters and 14.3 %
+    noise -- ARI 0.171. Scaling min_cluster_size by the sampling fraction does
+    not rescue it (ARI 0.151, and 0.040 at 50k). A default that halves your
+    cluster count is not an optimisation.
+    """
+    from kmer_dust.config import Config
+
+    assert Config().cluster.max_fit_rows == 0
+
+
+def test_subsample_fit_selection_is_seeded_and_sorted():
+    import numpy as np
+
+    from kmer_dust.cluster import _fit_subsample
+
+    x = np.zeros((1000, 2))
+    assert _fit_subsample(x, 0, 7) is None, "0 means fit on everything"
+    assert _fit_subsample(x, 5000, 7) is None, "no subsample when it would be a no-op"
+    a = _fit_subsample(x, 100, 7)
+    b = _fit_subsample(x, 100, 7)
+    c = _fit_subsample(x, 100, 8)
+    assert a is not None and len(a) == 100
+    assert np.array_equal(a, np.sort(a)), "indices must be sorted for stable slicing"
+    assert np.array_equal(a, b), "same seed must give the same subsample"
+    assert not np.array_equal(a, c), "a different seed must give a different subsample"
+
+
+def test_propagated_labels_keep_the_fitted_rows_exact():
+    """A fitted row is its own nearest neighbour, so its label must survive."""
+    import numpy as np
+
+    from kmer_dust.cluster import _propagate_labels
+
+    rng = np.random.default_rng(3)
+    blob_a = rng.normal(0, 0.1, size=(200, 2))
+    blob_b = rng.normal(5, 0.1, size=(200, 2))
+    x = np.vstack([blob_a, blob_b])
+    fit_idx = np.sort(rng.choice(x.shape[0], 100, replace=False))
+    fit_labels = np.where(fit_idx < 200, 0, 1).astype(np.int32)
+    fit_prob = np.ones(fit_idx.size, dtype=np.float32)
+
+    labels, prob, outlier = _propagate_labels(x, fit_idx, fit_labels, fit_prob)
+
+    assert np.array_equal(labels[fit_idx], fit_labels)
+    assert labels.shape == (x.shape[0],)
+    # every point should land in the blob it belongs to
+    assert (labels[:200] == 0).mean() > 0.95
+    assert (labels[200:] == 1).mean() > 0.95
+    assert prob.dtype == np.float32 and outlier.dtype == np.float32
+    assert np.all((outlier >= 0) & (outlier <= 1))
+
+
+def test_propagation_with_no_labelled_anchors_is_all_noise():
+    import numpy as np
+
+    from kmer_dust.cluster import _propagate_labels
+
+    x = np.random.default_rng(0).normal(size=(50, 2))
+    fit_idx = np.arange(10)
+    labels, prob, outlier = _propagate_labels(
+        x, fit_idx, np.full(10, -1, dtype=np.int32), np.zeros(10, dtype=np.float32)
+    )
+    assert (labels == -1).all()
+    assert (prob == 0).all()

@@ -120,8 +120,34 @@ same k-mers are chosen no matter what order the shards were processed in.
 | `min_samples` | `10` | conservativeness; higher = more noise |
 | `cluster_selection_epsilon` | `0.0` | merge clusters closer than this |
 | `eps` | `0.5` | DBSCAN only |
+| `max_fit_rows` | `0` | fit on a subsample and propagate. **Off by default — it changes the answer**, see below |
 
 If the run comes back >90 % noise, lower `min_samples` before anything else.
+
+> **Clustering is the scaling wall, and subsampling does not fix it.**
+> scikit-learn's HDBSCAN is quadratic in *n* on a 2-D embedding — measured at
+> 2.0 s / 25 k rows, 8.0 s / 50 k, 31.3 s / 100 k, 124.5 s / 200 k, i.e. ~4×
+> per doubling. That puts 1.3 M bins at ~88 minutes and 5 M at most of a day.
+>
+> `max_fit_rows` fits a subsample and gives every other bin its nearest fitted
+> neighbour's label. Scored against the exact labelling of 200 k real rows
+> (832 clusters, 30.6 % noise):
+>
+> | fit rows | clusters | noise | ARI | AMI | speedup |
+> | --- | --- | --- | --- | --- | --- |
+> | 100 k | 465 | 14.3 % | 0.171 | 0.740 | 4.1× |
+> | 50 k | 219 | 14.7 % | 0.084 | 0.679 | 15.7× |
+> | 25 k | 117 | 15.3 % | 0.051 | 0.636 | 61× |
+>
+> Scaling `min_cluster_size`/`min_samples` by the sampling fraction — so the
+> *density* criterion rather than the raw count stays comparable — does not
+> rescue it, and at 50 k makes it worse (1392 clusters, ARI 0.040). HDBSCAN's
+> condensed hierarchy is genuinely sensitive to which points are present.
+>
+> AMI near 0.7 says the broad structure survives, so it is a usable *coarse*
+> view — but it is a deliberate change of answer, not a free speed-up. For a run
+> too large to cluster exactly, prefer `method: dbscan`, which is O(n log n)
+> through a KD-tree on 2-D input.
 
 ## `annotate:`
 
