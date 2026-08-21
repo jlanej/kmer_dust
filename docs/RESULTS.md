@@ -131,3 +131,101 @@ track, read that JSON before reading the score.
 Everything above comes from `results/chr21/`. The run is deterministic given the
 config: same seed, same manifest, same clusters. `config.resolved.yaml` in the
 output directory is the exact input.
+
+
+---
+
+# The acrocentric run: two opposite predictions, both held
+
+A larger run designed so it could fail. 33 assemblies (32 HPRC release-2
+haplotypes + T2T-CHM13v2.0) across chr13/14/15/21/22 — **1,303,159 bins**,
+61.6 M hashes, 1.77 M selected k-mers.
+
+The acrocentrics force the method to commit to two predictions that point in
+**opposite** directions, so a method that trivially clusters by chromosome fails
+one and a method that ignores chromosome fails the other.
+
+## P1 — alpha-satellite HOR clusters should be chromosome-*pure*
+
+Each chromosome carries its own higher-order repeat variant. Over 193 asat
+clusters with ≥20 bins (29,151 bins):
+
+| | |
+| --- | --- |
+| median chromosome purity | **1.000** |
+| clusters ≥0.9 pure | **81 %** |
+| median distinct chromosomes per cluster | **1** |
+
+And the exception is the one the literature predicts. chr13/chr21 share a
+suprachromosomal family and are near-indistinguishable; so do chr14/chr22. Of
+the 36 impure clusters:
+
+| chromosome pair | clusters | |
+| --- | --- | --- |
+| chr14 + chr22 | 27 | **predicted** |
+| chr13 + chr21 | 4 | **predicted** |
+| chr14 + chr21 | 3 | |
+| chr13 + chr14 | 1 | |
+| chr13 + chr15 | 1 | |
+
+**86 % of all the mixing is the two predicted pairs.**
+
+## P2 — rDNA clusters should be chromosome-*mixed*
+
+The rDNA unit is the same on all five acrocentric short arms. Over 43 rDNA
+clusters with ≥20 bins (6,744 bins):
+
+| | |
+| --- | --- |
+| median chromosome purity | **0.268** (0.200 would be perfectly even across five) |
+| clusters ≥0.9 pure | **0 %** |
+| median distinct chromosomes per cluster | **5 of 5** |
+
+Same pipeline, same run, opposite behaviour — decided entirely by whether the
+underlying sequence family is chromosome-specific.
+
+## The unlocalised material is not an island
+
+81 % of the bins (649,671) come from `chrN_*_random` contigs with no chromosome
+coordinates. Of clusters with ≥20 bins, **0 % are purely unlocalised and 100 %
+mix localised and unlocalised bins** — so this material integrates with the
+placed sequence rather than forming its own compartment of assembly artefacts.
+
+## Assigning a chromosome to an unplaced contig — and knowing when not to
+
+Let the cluster's chromosome be decided by its *localised* members only, then
+predict the chromosome of each unlocalised bin. Its own `chrN_*_random` alias is
+the held-out answer (648,363 bins):
+
+| | bins | accuracy |
+| --- | --- | --- |
+| all | 648,363 | 34.6 % |
+| cluster chromosome purity ≥0.8 | 44,597 | **93.4 %** |
+| cluster chromosome purity ≥0.95 | 36,335 | **96.9 %** |
+| satellite bins | 67,392 | 62.8 % |
+
+The honest reading: chromosome assignment works **where chromosome-specific
+vocabulary exists** — alpha-satellite HOR — and fails where sequence is shared
+between chromosomes, which is most of the genome. The purity of the cluster's
+localised vote separates the two cases cleanly, so this is a "knows when it
+knows" result rather than a general contig-placement method. It covers 7 % of
+unlocalised bins at 93 %+ accuracy.
+
+## Cost, and what it should cost now
+
+| stage | this run | after the fixes below |
+| --- | --- | --- |
+| sketch | 702 s | 702 s |
+| select | 41 s | 41 s |
+| matrix | 54 s | 54 s |
+| decompose | 106 s | 106 s |
+| embed | 240 s | 240 s |
+| **cluster** | **4,819 s** | **~5 s** (`fast_hdbscan`) |
+| **annotate** | **2,484 s** | **~60 s** (reference-only is the default) |
+| **total** | **2 h 15 m** | **~20 min** |
+
+Two things dominated this run and neither had to. scikit-learn's HDBSCAN has no
+Boruvka MST, so it is O(n²) even on a 2-D embedding — `fast_hdbscan` does the
+identical clustering 1,025× faster. And per-assembly annotation was never an
+input to the method, only a way to check it; annotating the reference alone is
+now the default.
