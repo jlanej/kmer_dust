@@ -157,28 +157,68 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e '.[dev,workflow]'
+          # --only-binary pysam is load-bearing, not hygiene. A source build of
+          # pysam links htslib WITHOUT libcurl, and an htslib without libcurl
+          # cannot open https:// at all -- every remote assembly read then fails
+          # instantly with a message naming only the URL. Fail at install time
+          # instead.
+          pip install --only-binary=pysam -e '.[dev,workflow]'
 
-      - name: Cache the test-data fixture
-        uses: actions/cache@v4
-        with:
-          path: |
-            data/testdata
-            data/cache
-          # Keyed on the fetcher and on the slicing code it drives: either one
-          # changing can change which bytes end up on disk. Everything else
-          # about the fixture is pinned inside those two files.
-          key: kmer-dust-testdata-v1-${{ hashFiles('scripts/fetch_test_data.sh', 'src/kmer_dust/fetch.py', 'src/kmer_dust/catalog/*.py') }}
-          restore-keys: |
-            kmer-dust-testdata-v1-
+      - name: Record the environment
+        # First thing to read when the smoke job misbehaves. `remote_https`
+        # false here explains, on its own, a run that fetches nothing.
+        run: |
+          echo "::group::kmer-dust info"
+          kmer-dust info | tee "$RUNNER_TEMP/kmer-dust-info.json"
+          echo "::endgroup::"
+          echo "::group::htslib build details"
+          python -c "import pysam; print(pysam.samtools.version('--verbose'))"
+          echo "::endgroup::"
+          python - <<'PY'
+          import json, os, sys
+          info = json.load(open(os.environ["RUNNER_TEMP"] + "/kmer-dust-info.json"))
+          if info.get("remote_https") is not True:
+              print("::error title=htslib cannot open https::"
+                    + str(info.get("remote_https_problem", info.get("remote_https"))))
+              sys.exit(1)
+          PY
 
-      - name: Fetch the fixture
-        run: scripts/fetch_test_data.sh
-
-      - name: Network-marked tests
+      - name: Remote-access tests
+        # Deliberately BEFORE the fixture step. These open one remote FASTA and
+        # nothing else, so when the environment is the problem they fail in
+        # seconds with a precise error, instead of the fetcher spending minutes
+        # rejecting 40 haplotypes one at a time for the same underlying reason.
         env:
           KMER_DUST_TEST_NETWORK: "1"
         run: pytest -m network -v
+
+      - name: Restore the test-data fixture
+        id: fixture
+        uses: actions/cache/restore@v4
+        with:
+          path: data/testdata
+          # No restore-keys, on purpose. The key hashes the code that *produces*
+          # the fixture, so a fallback would fire exactly when fetch.py changes
+          # -- the case the key exists to catch -- and hand the new code a
+          # fixture built by the old code, with a matching .fetch_params stamp
+          # that makes the fetcher skip entirely. A broken fetcher would go
+          # green on stale bytes.
+          key: kmer-dust-testdata-v1-${{ hashFiles('scripts/fetch_test_data.sh', 'src/kmer_dust/fetch.py', 'src/kmer_dust/catalog/*.py') }}
+
+      - name: Restore the upstream download cache
+        # Separate step because this one MAY use a loose key: it holds nothing
+        # but content-addressed upstream downloads, re-validated on read.
+        uses: actions/cache/restore@v4
+        with:
+          path: data/cache
+          key: kmer-dust-downloads-v1-${{ hashFiles('src/kmer_dust/catalog/*.py') }}
+          restore-keys: |
+            kmer-dust-downloads-v1-
+
+      - name: Fetch the fixture
+        env:
+          KMER_DUST_LOGLEVEL: DEBUG
+        run: scripts/fetch_test_data.sh
 
       - name: Smoke test (kmer-dust run)
         run: scripts/smoke.sh --skip-fetch --force
@@ -186,7 +226,44 @@ jobs:
       - name: Smoke test (snakemake DAG)
         run: scripts/smoke.sh --skip-fetch --snakemake --cores 2 --force
 
-      - name: Upload the report
+      - name: Save the test-data fixture
+        # Only a fixture that survived both smoke runs is worth keeping, and
+        # `success()` means a zero-assembly fixture can never be cached: the
+        # verifier in fetch_test_data.sh already exits 1 on an empty manifest.
+        if: success() && steps.fixture.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/testdata
+          key: kmer-dust-testdata-v1-${{ hashFiles('scripts/fetch_test_data.sh', 'src/kmer_dust/fetch.py', 'src/kmer_dust/catalog/*.py') }}
+
+      - name: Save the upstream download cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: data/cache
+          key: kmer-dust-downloads-v1-${{ hashFiles('src/kmer_dust/catalog/*.py') }}
+
+      - name: Explain a failure
+        # The job is continue-on-error, so without this the run is green and
+        # nothing says otherwise. An ::error:: annotation shows up on the run
+        # summary page even when the job is allowed to fail.
+        if: failure()
+        run: |
+          echo "::error title=smoke job failed::real-data smoke test failed; see the 'Record the environment' and 'Fetch the fixture' steps"
+          {
+            echo "## real-data smoke failed"
+            echo
+            echo '```json'
+            cat "$RUNNER_TEMP/kmer-dust-info.json" 2>/dev/null || echo '(kmer-dust info never ran)'
+            echo '```'
+            echo
+            echo "Fixture manifest:"
+            echo '```'
+            cat data/testdata/manifest.tsv 2>/dev/null || echo '(no manifest written)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -194,4 +271,6 @@ jobs:
           path: |
             results/smoke/report/
             results/smoke/logs/
-          if-no-files-found: ignore
+            data/testdata/manifest.tsv
+            data/testdata/.fetch_params
+          if-no-files-found: warn

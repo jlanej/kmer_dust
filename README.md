@@ -490,6 +490,28 @@ Network-touching tests are marked; skip them with `-m 'not network'`.
 `docs/API.md` is the internal contract every module is written against — read it
 before changing a signature.
 
+## Troubleshooting
+
+**A run downloads nothing and reports 0 assemblies.** Start here:
+
+```bash
+kmer-dust info
+```
+
+If `remote_https` is `false`, htslib was built without libcurl and *cannot open
+`https://` URLs at all* — every remote assembly read will fail instantly, with
+an error naming only the URL. It almost always means pysam was built from its
+sdist instead of installed from a wheel:
+
+```bash
+pip install --force-reinstall --only-binary=:all: pysam
+```
+
+`kmer-dust fetch` runs that same check before it touches the network, and a
+fetch that ends with nothing prints a funnel (candidates → attempts → failures
+bucketed by reason, with a worked example of each) as its final lines rather
+than leaving the explanation hundreds of lines up the log.
+
 ## Licence
 
 MIT. HPRC and T2T data are used under their own terms; see

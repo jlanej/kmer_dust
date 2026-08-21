@@ -310,6 +310,21 @@ def info() -> None:
         payload["numba_kernel"] = NUMBA_AVAILABLE
     except Exception:  # noqa: BLE001
         payload["numba_kernel"] = False
+    # Whether htslib can open https at all decides whether *any* remote assembly
+    # read can work, and it is invisible from a version number -- so it belongs
+    # in the one command people run when something is wrong.
+    try:
+        from .preflight import check_remote_access, htslib_info
+
+        info_ = htslib_info()
+        ok, explanation = check_remote_access()
+        payload["htslib"] = info_.version or "unknown"
+        payload["htslib_features"] = info_.features or {}
+        payload["remote_https"] = ok
+        if not ok:
+            payload["remote_https_problem"] = explanation
+    except Exception as exc:  # noqa: BLE001
+        payload["remote_https"] = f"unknown ({type(exc).__name__})"
     typer.echo(json.dumps(payload, indent=2))
 
 

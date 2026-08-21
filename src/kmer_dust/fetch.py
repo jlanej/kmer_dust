@@ -42,6 +42,7 @@ from .catalog import hprc, t2t
 from .catalog import manifest as manifest_mod
 from .config import Config
 from .log import get_logger, timed
+from .preflight import check_remote_access, require_remote_access
 
 __all__ = [
     "fetch_testdata",
@@ -617,7 +618,15 @@ def _fetch_sequence(fasta_url: str, contig: str, start: int, end: int) -> tuple[
     """``(sequence, contig_length)`` for ``[start, end)``, clipped to the contig."""
     import pysam
 
-    handle = pysam.FastaFile(fasta_url)
+    from .preflight import capture_c_stderr, describe_open_failure
+
+    # htslib writes its real diagnostic to fd 2 from C and pysam raises an
+    # OSError naming only the URL, so the reason is lost unless we catch it here.
+    with capture_c_stderr() as captured:
+        try:
+            handle = pysam.FastaFile(fasta_url)
+        except Exception as exc:
+            raise OSError(describe_open_failure(fasta_url, exc, captured)) from exc
     try:
         try:
             length = int(handle.get_reference_length(contig))
@@ -641,8 +650,14 @@ def _slice_assembly(
     end: int,
     tracks: Sequence[str],
     force: bool,
+    failures: list[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Slice one assembly; returns its sidecar dict, or ``None`` on failure."""
+    """Slice one assembly; returns its sidecar dict, or ``None`` on failure.
+
+    Every ``None`` also appends a one-line reason to ``failures`` when given, so
+    the caller can summarise *why* a run produced nothing instead of leaving the
+    explanation hundreds of lines up the log.
+    """
     assembly = str(row["assembly"])
     sidecar_path = dest / f"{assembly}.slice.json"
     fasta_path = dest / f"{assembly}.fa.gz"
@@ -663,12 +678,25 @@ def _slice_assembly(
         contig = _contig_for_chrom(alias, chrom)
         if not contig:
             log.warning("%s: chromAlias has no contig for %s; skipping", assembly, chrom)
+            if failures is not None:
+                failures.append(f"no-contig-for-{chrom}: {assembly}")
             return None
 
     try:
         sequence, contig_length = _fetch_sequence(str(row["fasta"]), contig, start, end)
     except Exception as exc:  # noqa: BLE001 - a bad assembly must not stop the fetch
         log.warning("%s: cannot fetch %s:%d-%d (%s); skipping", assembly, contig, start, end, exc)
+        if failures is not None:
+            # The bucket has to distinguish "could not reach the file" from
+            # "reached it, the request was wrong", because only the first one
+            # means anything about the environment. _fetch_sequence raises
+            # KeyError for a missing contig and ValueError for an out-of-range
+            # slice; anything else got as far as htslib opening the URL.
+            kind = {
+                KeyError: "contig-not-in-fasta",
+                ValueError: "slice-out-of-range",
+            }.get(type(exc), "remote-open-failed")
+            failures.append(f"{kind}: {assembly} ({exc})")
         return None
     stop = start + len(sequence)
 
@@ -837,11 +865,18 @@ def fetch_testdata(
     end = start + int(round(span_mb * 1e6))
     if start < 0:
         raise ValueError("offset_mb must be >= 0")
+    # Fails instantly and says exactly why, instead of letting every remote open
+    # die one at a time with a message that names only the URL.
+    require_remote_access()
+
+    failures: list[str] = []
     log.info("test data: %d sample(s) x %s:%d-%d -> %s", samples, chrom, start, end, dest)
 
     sidecars: list[dict[str, Any]] = []
+    pool_size = 0
     if samples > 0:
         pool = _candidate_manifest(cache_dir, chrom, seed=7)
+        pool_size = int(len(pool))
         order = manifest_mod.ordered_samples(pool, 7) if len(pool) else []
         by_sample = {
             str(name): rows.sort_values(["haplotype", "assembly"], kind="stable")
@@ -871,6 +906,7 @@ def fetch_testdata(
                         end=end,
                         tracks=("censat", "repeatmasker", "segdup"),
                         force=force,
+                        failures=failures,
                     )
                     if sidecar is not None:
                         produced.append(sidecar)
@@ -894,6 +930,7 @@ def fetch_testdata(
                 end=end,
                 tracks=("censat", "repeatmasker", "segdup", "telomere"),
                 force=force,
+                failures=failures,
             )
         if sidecar is None:
             log.warning("could not slice the CHM13 reference; test data has no reference row")
@@ -910,4 +947,46 @@ def fetch_testdata(
     _write_checksums(dest)
     total = sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
     log.info("test data ready: %d assemblies, %.1f MB in %s", len(frame), total / 1e6, dest)
+    if len(frame) == 0:
+        _explain_empty_fetch(failures, pool_size, chrom)
     return path
+
+
+def _explain_empty_fetch(failures: Sequence[str], pool_size: int, chrom: str) -> None:
+    """Say, in the last lines of the log, why a fetch produced nothing.
+
+    Without this the transcript ends on three lines that between them report a
+    duration, a symptom and a count -- and the causal records are a few hundred
+    lines further up, one per rejected haplotype, all nearly identical.
+    """
+    log.error("fetch produced NO assemblies. Funnel:")
+    log.error("  candidate assemblies in the catalog : %d", pool_size)
+    log.error("  slice attempts that failed          : %d", len(failures))
+    if not failures:
+        log.error(
+            "  no assembly was even attempted -- the candidate pool for %s was empty, so "
+            "the HPRC catalog itself came back with nothing usable (check the warnings "
+            "above from kmer_dust.catalog).",
+            chrom,
+        )
+    else:
+        buckets: dict[str, list[str]] = {}
+        for reason in failures:
+            kind, _, detail = reason.partition(": ")
+            buckets.setdefault(kind, []).append(detail)
+        for kind, details in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
+            log.error("  %-22s x%-4d e.g. %s", kind, len(details), details[0])
+    ok, explanation = check_remote_access()
+    log.error("  htslib: %s", explanation)
+    # Only draw the network conclusion when the failures actually *are* remote
+    # opens. A wrong diagnosis in an error message costs more than none at all:
+    # "check your egress" sends the reader down the wrong path when the real
+    # answer was an out-of-range slice or a missing chromosome.
+    remote_failures = sum(1 for f in failures if f.startswith("remote-open-failed"))
+    if ok and remote_failures:
+        log.error(
+            "  htslib CAN do https, so the %d failed remote open(s) point at the network "
+            "or the endpoint rather than a broken install: check egress to "
+            "s3-us-west-2.amazonaws.com from this host.",
+            remote_failures,
+        )
