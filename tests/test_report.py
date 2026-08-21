@@ -124,3 +124,62 @@ def test_cdn_url_uses_the_plotlyjs_version_not_the_plotly_py_version():
     # The bug was using the Python package version here.
     if plotly.__version__ != js_version:
         assert f"plotly-{plotly.__version__}.min.js" not in tag
+
+
+def test_quantised_columns_round_trip_within_tolerance():
+    """Coordinates are shipped as int16 codes plus scale/offset.
+
+    They only ever become pixels, so 16 bits across the data range is orders of
+    magnitude finer than a screen — and halving the bytes against float32 is
+    what lets the map plot every bin instead of a sample.
+    """
+    import numpy as np
+
+    from kmer_dust.viz.report import _pack_quantised
+
+    rng = np.random.default_rng(0)
+    values = rng.uniform(-25.0, 40.0, size=10_000)
+    spec = _pack_quantised(values)
+    assert spec["d"] == "u2"
+    assert "s" in spec and "o" in spec
+
+    import base64
+
+    codes = np.frombuffer(base64.b64decode(spec["b"]), dtype="<u2")
+    restored = codes * spec["s"] + spec["o"]
+    # one quantisation step is the worst possible error
+    assert np.abs(restored - values).max() <= spec["s"]
+    assert spec["s"] < (values.max() - values.min()) / 60_000
+
+
+def test_quantised_eight_bit_is_used_for_colour_ramps():
+    import numpy as np
+
+    from kmer_dust.viz.report import _pack_quantised
+
+    spec = _pack_quantised(np.linspace(0.0, 1.0, 500), bits=8)
+    assert spec["d"] == "u1"
+
+
+def test_quantising_a_constant_or_empty_column_does_not_divide_by_zero():
+    import numpy as np
+
+    from kmer_dust.viz.report import _pack_quantised
+
+    flat = _pack_quantised(np.full(100, 3.5))
+    assert flat["n"] == 100 and flat["s"] == 1.0
+    nan = _pack_quantised(np.full(10, np.nan))
+    assert nan["n"] == 10
+    assert _pack_quantised(np.array([], dtype=np.float64))["n"] == 0
+
+
+def test_max_points_zero_plots_everything(smoke_run):
+    from kmer_dust.viz.report import build_report
+
+    cfg, _, _ = smoke_run
+    cfg.report.max_points = 0
+    path = build_report(cfg, cfg.out, force=True)
+    import json
+
+    summary = json.loads((path.parent / "summary.json").read_text())
+    assert summary["report"]["subsampled"] is False

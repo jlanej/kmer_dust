@@ -84,7 +84,9 @@ plus CHM13: 24 assemblies, 105,007 bins. The pipeline is written to scale to all
    └─────────────────────────────────────────────────────────┘
 ```
 
-The k-mer selection step is the interesting one. A k-mer present in **one**
+The k-mer selection step is the interesting one — [`docs/KMER-SELECTION.md`](docs/KMER-SELECTION.md)
+works through it in full, including the failure mode that silently thins the
+matrix on a larger run. A k-mer present in **one**
 sample is mostly assembly noise, so a floor on *sample* prevalence (default: 10 %
 of samples) throws it away. The ceiling defaults to keeping everything, because a
 k-mer shared by every sample is not the same thing as a k-mer shared by every
@@ -488,7 +490,9 @@ ruff check .
 Network-touching tests are marked; skip them with `-m 'not network'`.
 
 `docs/API.md` is the internal contract every module is written against — read it
-before changing a signature.
+before changing a signature. [`docs/KMER-SELECTION.md`](docs/KMER-SELECTION.md)
+explains how the feature set is chosen, [`docs/CONFIG.md`](docs/CONFIG.md) every
+knob, and [`docs/RESULTS.md`](docs/RESULTS.md) what real runs produced.
 
 ## Troubleshooting
 

@@ -458,6 +458,40 @@ def _pack_positions(values: np.ndarray) -> dict[str, Any]:
     return _pack(values, "i4")
 
 
+
+def _pack_quantised(values: np.ndarray, *, bits: int = 16) -> dict[str, Any]:
+    """A continuous column as integer codes plus a scale and offset.
+
+    These columns exist to be turned into pixels and colours, and nothing
+    downstream reads them back as numbers, so full float precision is wasted
+    bytes.  16 bits across the observed range is ~65k distinguishable levels --
+    two orders of magnitude finer than any screen -- and halves the payload
+    against float32.  For a colour ramp 8 bits is already more than the eye
+    resolves.
+
+    NaN is mapped to the low end and paired with plotly's own handling by the
+    caller; the alternative (a sentinel level) costs a branch in the decoder for
+    no visible benefit.
+    """
+    arr = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(arr)
+    if not finite.any():
+        return _pack(np.zeros(arr.size, dtype=np.int16), "i2") | {"s": 1.0, "o": 0.0}
+    lo = float(arr[finite].min())
+    hi = float(arr[finite].max())
+    span = hi - lo
+    levels = (1 << bits) - 1
+    scale = (span / levels) if span > 0 else 1.0
+    codes = np.zeros(arr.size, dtype=np.float64)
+    codes[finite] = np.round((arr[finite] - lo) / scale)
+    codes = np.clip(codes, 0, levels)
+    dtype = "u2" if bits > 8 else "u1"
+    packed = _pack(codes.astype(np.uint16 if bits > 8 else np.uint8), dtype)
+    packed["s"] = scale
+    packed["o"] = lo
+    return packed
+
+
 def _pack_codes(codes: np.ndarray) -> dict[str, Any]:
     """Integer codes in the narrowest type that holds them."""
     codes = np.asarray(codes)
@@ -571,10 +605,11 @@ def _subsample(bins: pd.DataFrame, cfg: Config, notes: list[str]) -> pd.DataFram
     dropping its bins to make room for the 400th haplotype would be exactly
     backwards.
     """
-    budget = max(1000, int(cfg.report.max_points))
+    budget = int(cfg.report.max_points)
     total = len(bins)
-    if total <= budget:
+    if budget <= 0 or total <= budget:
         return bins
+    budget = max(1000, budget)
     rng = np.random.default_rng(int(cfg.report.seed))
     ref = np.flatnonzero(bins["is_reference"].to_numpy())
     other = np.flatnonzero(~bins["is_reference"].to_numpy())
@@ -622,8 +657,11 @@ def _build_payload(run: _Run, cfg: Config, notes: list[str]) -> dict[str, Any]:
             "spans": False,
         }
 
-    arrays["x"] = _pack(bins["x"].to_numpy(dtype=np.float32), "f4")
-    arrays["y"] = _pack(bins["y"].to_numpy(dtype=np.float32), "f4")
+    # Coordinates are quantised: see _pack_quantised. This is the single
+    # biggest line in the payload, so halving it is what lets the map show
+    # millions of points rather than a sample of them.
+    arrays["x"] = _pack_quantised(bins["x"].to_numpy(dtype=np.float64))
+    arrays["y"] = _pack_quantised(bins["y"].to_numpy(dtype=np.float64))
     arrays["start"] = _pack_positions(bins["start"].to_numpy(dtype=np.int64))
     spans = (bins["end"] - bins["start"]).to_numpy(dtype=np.int64)
     uniform = bool(spans.size and np.all(spans == spans[0]) and spans[0] == cfg.sketch.bin_size)
@@ -631,10 +669,10 @@ def _build_payload(run: _Run, cfg: Config, notes: list[str]) -> dict[str, Any]:
         arrays["span"] = _pack_positions(spans)
 
     gc = bins["gc"].to_numpy(dtype=np.float32)
-    arrays["gc"] = _pack(gc, "f4")
+    arrays["gc"] = _pack_quantised(gc, bits=8)  # a colour ramp; 256 levels is plenty
     with np.errstate(divide="ignore", invalid="ignore"):
         logns = np.log10(np.maximum(bins["n_sketch"].to_numpy(dtype=np.float64), 1.0))
-    arrays["logns"] = _pack(logns.astype(np.float32), "f4")
+    arrays["logns"] = _pack_quantised(logns, bits=8)
 
     # --- categorical columns ---------------------------------------------
     chrom_codes, levels["chrom"] = _levels(
@@ -683,7 +721,9 @@ def _build_payload(run: _Run, cfg: Config, notes: list[str]) -> dict[str, Any]:
     feat_codes, levels["feature"] = _feature_levels(bins)
     if run.stages.get("annotate"):
         arrays["feature"] = _pack_codes(feat_codes)
-        arrays["domfrac"] = _pack(bins["dominant_frac"].to_numpy(dtype=np.float32), "f4")
+        arrays["domfrac"] = _pack_quantised(
+            bins["dominant_frac"].to_numpy(dtype=np.float64), bits=8
+        )
 
     # --- colourings -------------------------------------------------------
     def add_cat(key: str, label: str, level_key: str) -> None:

@@ -184,7 +184,17 @@ class EnrichConfig:
 
 @dataclass
 class ReportConfig:
-    max_points: int = 300_000
+    """Interactive report.
+
+    ``max_points`` is a **file size** budget, not a rendering one.  WebGL
+    (plotly's scattergl) draws millions of points without complaint; what costs
+    is shipping their coordinates inside a static HTML file.  After quantising
+    the coordinate and ramp columns the payload is roughly 20 bytes per bin, so
+    1 M points is about 20 MB of data on top of the ~4.9 MB plotly bundle.  Set
+    it to 0 to plot every bin and accept whatever that weighs.
+    """
+
+    max_points: int = 1_000_000
     title: str = ""
     subtitle: str = ""
     point_size: float = 3.0

@@ -40,7 +40,48 @@
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     // Every platform that runs a browser is little-endian, which is the byte
     // order Python wrote.
-    return new (CTORS[spec.d] || Float32Array)(bytes.buffer, 0, spec.n);
+    var raw = new (CTORS[spec.d] || Float32Array)(bytes.buffer, 0, spec.n);
+    if (spec.s === undefined) return raw;
+    // Quantised column: integer codes plus a scale/offset. Coordinates only
+    // ever have to survive being turned into pixels, so 16 bits across the
+    // data range is far more precision than a screen can show, and it halves
+    // the bytes against float32.
+    var out = new Float32Array(spec.n);
+    for (var j = 0; j < spec.n; j++) out[j] = raw[j] * spec.s + spec.o;
+    return out;
+  }
+
+
+  // Hold shift to switch the drag from pan to box-select for as long as it is
+  // held. Plotly has no built-in modifier for this, and relayout is cheap
+  // enough to do on keydown -- but only when the pointer is actually over the
+  // plot, so shift-clicking elsewhere on the page does not disturb it.
+  function bindShiftToSelect(gd) {
+    if (!HAS_PLOTLY || !gd) return;
+    var over = false, latched = false;
+    gd.addEventListener("mouseenter", function () { over = true; });
+    gd.addEventListener("mouseleave", function () { over = false; });
+    function setMode(mode) {
+      var current = (gd.layout && gd.layout.dragmode) || "pan";
+      if (current === mode) return;
+      Plotly.relayout(gd, { dragmode: mode });
+    }
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Shift" || !over || latched) return;
+      // Do not fight a mode the user picked from the modebar.
+      if ((gd.layout && gd.layout.dragmode) !== "pan") { latched = true; return; }
+      setMode("select");
+    });
+    document.addEventListener("keyup", function (ev) {
+      if (ev.key !== "Shift") return;
+      if (latched) { latched = false; return; }
+      setMode("pan");
+    });
+    // Releasing shift outside the window would otherwise leave it stuck.
+    window.addEventListener("blur", function () {
+      latched = false;
+      setMode("pan");
+    });
   }
 
   var _cache = {};
@@ -200,7 +241,11 @@
         title: { text: KD.embedLabel + " 2", font: { size: 10 } },
         scaleanchor: "x", scaleratio: 1
       }),
-      dragmode: "lasso",
+      // Drag pans, shift-drag selects. A map you explore should behave like a
+      // map: dragging moves it. Selection is the deliberate act, so it gets the
+      // modifier -- and the modebar still offers box and lasso for anyone who
+      // would rather latch the mode.
+      dragmode: "pan",
       hovermode: "closest"
     };
     Plotly.newPlot(umapDiv, [trace], layout, {
@@ -208,6 +253,7 @@
       modeBarButtonsToRemove: hiddenButtons(),
       toImageButtonOptions: { format: "png", scale: 2, filename: KD.runName + "_map" }
     });
+    bindShiftToSelect(umapDiv);
     umapDiv.on("plotly_selected", function (ev) { onScatterSelect(ev); });
     umapDiv.on("plotly_deselect", function () { clearSelection(); });
     umapDiv.on("plotly_hover", function (ev) { showTip(ev, umapDiv); });
