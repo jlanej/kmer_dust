@@ -1205,16 +1205,53 @@ def _stats(run: _Run, cfg: Config) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
+#: Last resort when plotly cannot be imported at all.  Pinned rather than
+#: floating: a "latest" URL would silently change the rendering engine under a
+#: report that was generated for a specific one.
+_CDN_FALLBACK_JS = "3.0.1"
+
+
+def _plotlyjs_version() -> str:
+    """Version of the bundled **plotly.js**, which is not plotly.py's version.
+
+    This distinction is load-bearing.  ``plotly.__version__`` is the Python
+    package (6.9.0); the JavaScript it ships is a different project on its own
+    numbering (3.7.0), and the CDN indexes the *JavaScript* one.  Building a CDN
+    URL from the Python version yields ``plotly-6.9.0.min.js``, which does not
+    exist -- the CDN answers 403 and the page renders as a blank white
+    rectangle, with no console error that names the real problem.
+    """
+    try:
+        from plotly.offline import get_plotlyjs_version
+
+        return str(get_plotlyjs_version())
+    except Exception:  # noqa: BLE001 - older plotly.py has no such helper
+        pass
+    try:
+        import re
+
+        from plotly.offline import get_plotlyjs
+
+        match = re.search(r"plotly\.js v([\d.]+)", get_plotlyjs()[:400])
+        if match:
+            return match.group(1)
+    except Exception:  # noqa: BLE001
+        pass
+    log.warning("could not determine the bundled plotly.js version; pinning %s", _CDN_FALLBACK_JS)
+    return _CDN_FALLBACK_JS
+
+
 def _plotly_block(cfg: Config) -> tuple[str, str]:
     """``(script tag, version)``, embedding the library when asked to."""
     try:
-        import plotly
+        import plotly  # noqa: F401
 
-        version = str(plotly.__version__)
+        version = _plotlyjs_version()
     except ImportError:  # pragma: no cover - plotly is a hard dependency
         log.warning("plotly is not importable; the report will fall back to the CDN")
         return (
-            '<script src="https://cdn.plot.ly/plotly-3.0.1.min.js" charset="utf-8"></script>',
+            f'<script src="https://cdn.plot.ly/plotly-{_CDN_FALLBACK_JS}.min.js" '
+            'charset="utf-8"></script>',
             "unknown",
         )
     if not cfg.report.embed_plotlyjs:

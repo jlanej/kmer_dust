@@ -98,3 +98,29 @@ def test_rebuild_is_stable(smoke_run):
     first = build_report(cfg, cfg.out, force=True).read_bytes()
     second = build_report(cfg, cfg.out, force=True).read_bytes()
     assert len(first) == len(second)
+
+
+def test_cdn_url_uses_the_plotlyjs_version_not_the_plotly_py_version():
+    """The CDN indexes plotly.js, which is a different project from plotly.py.
+
+    plotly.py 6.9.0 ships plotly.js 3.7.0. Building the CDN URL from
+    ``plotly.__version__`` yields ``plotly-6.9.0.min.js``, which does not exist:
+    the CDN answers 403, the script never loads, and the page renders as a blank
+    white rectangle with no error that names the cause. This bit exactly once.
+    """
+    from kmer_dust.config import Config
+    from kmer_dust.viz.report import _plotly_block, _plotlyjs_version
+
+    js_version = _plotlyjs_version()
+    assert js_version and js_version[0].isdigit()
+
+    import plotly
+
+    cfg = Config()
+    cfg.report.embed_plotlyjs = False
+    tag, reported = _plotly_block(cfg)
+    assert f"plotly-{js_version}.min.js" in tag
+    assert reported == js_version
+    # The bug was using the Python package version here.
+    if plotly.__version__ != js_version:
+        assert f"plotly-{plotly.__version__}.min.js" not in tag

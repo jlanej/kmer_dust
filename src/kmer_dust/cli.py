@@ -296,6 +296,66 @@ def _find_preset(name: str) -> Path | None:
 
 
 @app.command()
+def publish(
+    config: Path = _CONFIG_OPT,
+    output: Path = typer.Option(
+        Path("index.html"), "--output", "-o", help="Where to write the page."
+    ),
+    embed: bool = typer.Option(
+        False,
+        "--embed/--cdn",
+        help=(
+            "Inline plotly.js (~4.9 MB, works offline) or load it from the CDN "
+            "(smaller file, needs network). CDN is the default because the page is "
+            "meant to be committed."
+        ),
+    ),
+    title: str | None = typer.Option(None, "--title", help="Override the report title."),
+    set_: list[str] | None = typer.Option(None, "--set", "-s", help="Override a config value."),
+) -> None:
+    """Render a finished run as a standalone page (for GitHub Pages).
+
+    This rebuilds the report rather than copying it, because the published copy
+    wants different trade-offs from the one in the run directory: the run copy
+    inlines plotly.js so it survives being emailed around, while a copy destined
+    for git wants to stay small across every version git will keep forever.
+    """
+    from .viz import report as report_mod
+
+    cfg = _load(config, set_)
+    if title:
+        cfg.report.title = title
+    cfg.report.embed_plotlyjs = embed
+
+    built = report_mod.build_report(cfg, cfg.out, force=True)
+    output = output.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(built.read_bytes())
+
+    # GitHub Pages runs Jekyll by default, which silently drops files and
+    # directories whose names begin with an underscore. Nothing here starts with
+    # one today, but the marker costs a byte and removes a whole class of
+    # "why is my page 404" from the future.
+    nojekyll = output.parent / ".nojekyll"
+    if not nojekyll.exists():
+        nojekyll.write_text("")
+
+    size_mb = output.stat().st_size / 1e6
+    typer.echo(
+        json.dumps(
+            {
+                "output": str(output),
+                "megabytes": round(size_mb, 2),
+                "plotlyjs": "inlined" if embed else "cdn",
+                "run": cfg.run_name,
+                "source": str(built),
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command()
 def info() -> None:
     """Print versions and the state of the optional accelerators."""
     payload: dict[str, object] = {"kmer_dust": __version__, "python": sys.version.split()[0]}
