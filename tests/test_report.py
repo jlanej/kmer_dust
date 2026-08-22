@@ -183,3 +183,64 @@ def test_max_points_zero_plots_everything(smoke_run):
 
     summary = json.loads((path.parent / "summary.json").read_text())
     assert summary["report"]["subsampled"] is False
+
+
+def test_findings_json_is_embedded_when_present(tmp_path):
+    """An analysis states its own conclusion; the report just renders it.
+
+    The explorer is a tool, the findings band is the argument -- and it comes
+    from a file so a new analysis can put its result on the page without the
+    viewer knowing anything about that analysis.
+    """
+    import json
+
+    from kmer_dust.viz.report import _findings_html
+
+    (tmp_path / "analysis").mkdir()
+    (tmp_path / "analysis" / "findings.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "kicker": "prediction held",
+                        "headline": "HOR clusters are chromosome-specific",
+                        "detail": "median purity 1.000",
+                        "evidence": [["median purity", "1.000"], ["n clusters", 193]],
+                    }
+                ]
+            }
+        )
+    )
+    out = _findings_html(tmp_path)
+    assert "HOR clusters are chromosome-specific" in out
+    assert "median purity" in out
+    assert "1.000" in out
+    assert "kd-findings" in out
+
+
+def test_findings_are_optional_and_failures_are_silent(tmp_path):
+    from kmer_dust.viz.report import _findings_html
+
+    assert _findings_html(tmp_path) == ""
+    (tmp_path / "analysis").mkdir()
+    (tmp_path / "analysis" / "findings.json").write_text("{not json")
+    assert _findings_html(tmp_path) == ""
+    (tmp_path / "analysis" / "findings.json").write_text('{"findings": []}')
+    assert _findings_html(tmp_path) == ""
+    # a finding with no headline is skipped rather than rendered blank
+    (tmp_path / "analysis" / "findings.json").write_text('{"findings": [{"detail": "x"}]}')
+    assert _findings_html(tmp_path) == ""
+
+
+def test_findings_escape_untrusted_text(tmp_path):
+    import json
+
+    from kmer_dust.viz.report import _findings_html
+
+    (tmp_path / "analysis").mkdir()
+    (tmp_path / "analysis" / "findings.json").write_text(
+        json.dumps({"findings": [{"headline": "<script>alert(1)</script>"}]})
+    )
+    out = _findings_html(tmp_path)
+    assert "<script>alert(1)</script>" not in out
+    assert "&lt;script&gt;" in out

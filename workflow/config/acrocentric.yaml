@@ -1,0 +1,116 @@
+# Every HPRC release-2 haplotype, across the five acrocentric chromosomes.
+#
+# The acrocentric short arms carry the rDNA arrays, the largest satellite blocks
+# in the genome, and -- per Guarracino et al. 2023 -- recombine with each other
+# across chromosomes. They are also the least well assembled and least well
+# annotated part of the genome, which is exactly where an alignment-free,
+# reference-light method has something to say.
+#
+# Cost, from measured rates: ~2.7 h sketching (download-bound), ~19 M bins,
+# ~0.9 B non-zeros, ~7 GB matrix. Whole-genome across all 465 haplotypes would
+# be ~21 h and a 54 GB matrix; that needs a cluster, not a laptop.
+
+run_name: acrocentric-all
+outdir: results/acro-all
+datadir: data
+threads: 8
+seed: 7
+
+manifest:
+  source: hprc_release2
+  chroms: [chr13, chr14, chr15, chr21, chr22]
+  max_samples: 0        # every sample
+  max_assemblies: 0     # every haplotype
+  # Costs one small HTTP GET per assembly and would drop ~90 % of them for five
+  # chromosomes at once. The placement fix means unlocalised contigs are kept
+  # with their chromosome, so completeness is no longer a prerequisite.
+  require_t2t_chrom: false
+  # chrom_alias is the only annotation the method itself needs: it is what maps
+  # a PanSN contig to a chromosome. cenSat and friends are for validation only.
+  require_annotations: [chrom_alias]
+  include_reference: true
+  seed: 7
+
+sketch:
+  k: 31
+  bin_size: 10000
+  scaled: 200
+  min_bin_acgt_frac: 0.5
+  min_bin_sketch: 5
+  # chrN_*_random contigs come in with their chromosome; chrUn_* stays out.
+  include_unplaced: false
+  drop_partial_terminal_bin: true
+  # Sketching is download-bound against a per-connection-throttled endpoint
+  # (~0.57 MB/s each, scaling linearly to at least 6 connections), so this is
+  # deliberately oversubscribed against 10 cores.
+  threads: 16
+
+select:
+  min_sample_prevalence: 0.05
+  max_sample_prevalence: 1.0
+  min_bins: 2
+  # 0 = keep everything eligible. An absolute cap does not scale with the run:
+  # see docs/KMER-SELECTION.md.
+  max_features: 0
+  # Peak memory is one bucket, so this is the knob that keeps 19 M bins inside
+  # a node.
+  n_buckets: 64
+  seed: 7
+
+matrix:
+  weighting: idf
+  row_norm: l2
+  drop_empty_rows: true
+
+decompose:
+  n_components: 64
+  n_oversamples: 20
+  n_iter: 7
+  keep_components: true
+  drop_first: 0
+  seed: 7
+
+embed:
+  n_neighbors: 30
+  min_dist: 0.05
+  metric: cosine
+  n_components: 2
+  # Fit a bounded subsample and transform the rest. Unlike the clustering, this
+  # IS a faithful approximation -- and at 19 M rows a full fit is not an option.
+  max_fit_rows: 200000
+  deterministic: false
+  n_jobs: 8
+  seed: 7
+
+cluster:
+  method: hdbscan
+  space: embedding
+  min_cluster_size: 50
+  min_samples: 10
+  cluster_selection_epsilon: 0.0
+  cluster_selection_method: eom
+  # Exact. fast_hdbscan makes it affordable: 1.3 M rows in 4.7 s.
+  max_fit_rows: 0
+  seed: 7
+
+annotate:
+  reference_tracks: [censat, repeatmasker, segdup, telomere, gene]
+  assembly_tracks: [censat, repeatmasker, segdup]
+  # The method annotates the REFERENCE and back-propagates. Turning this on
+  # would download ~167 MB per haplotype -- 78 GB across 465 -- purely to check
+  # an answer we can already check on a subset.
+  annotate_assemblies: false
+  min_frac_for_dominant: 0.25
+
+enrich:
+  min_cluster_size: 10
+  min_frac: 0.25
+  top_features: 3
+
+report:
+  max_points: 1000000
+  title: "kmer-dust — every HPRC haplotype, the five acrocentric chromosomes"
+  subtitle: "465 assemblies, 10 kb bins, no aligner"
+  point_size: 2.0
+  embed_plotlyjs: true
+  seed: 7

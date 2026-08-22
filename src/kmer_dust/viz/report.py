@@ -1062,6 +1062,72 @@ def _tile(label: str, value: str, sub: str = "", empty: bool = False) -> str:
     )
 
 
+
+def _findings_html(outdir: Path) -> str:
+    """Render `analysis/findings.json` if an analysis wrote one.
+
+    The explorer below is a tool; this band is the argument.  A reader who never
+    touches the map should still leave knowing what the run found, so the
+    findings sit above the fold, and they come from a file rather than from the
+    report code so that an analysis can state its own conclusion without the
+    viewer having to know anything about it.
+
+    Schema (all fields optional but `headline`)::
+
+        {"findings": [
+            {"headline": "...", "detail": "...", "kicker": "...",
+             "evidence": [["label", "value"], ...]}
+        ]}
+    """
+    path = Path(outdir) / "analysis" / "findings.json"
+    if not path.is_file():
+        return ""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("ignoring unreadable %s (%s)", path, exc)
+        return ""
+    items = payload.get("findings") or []
+    if not isinstance(items, list) or not items:
+        return ""
+
+    cards: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("headline"):
+            continue
+        kicker = html.escape(str(item.get("kicker", "") or ""))
+        headline = html.escape(str(item["headline"]))
+        detail = html.escape(str(item.get("detail", "") or ""))
+        rows = ""
+        evidence = item.get("evidence") or []
+        if isinstance(evidence, list) and evidence:
+            cells = "".join(
+                f"<tr><th>{html.escape(str(pair[0]))}</th>"
+                f"<td>{html.escape(str(pair[1]))}</td></tr>"
+                for pair in evidence
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            )
+            if cells:
+                rows = f"<table class='kd-evidence'>{cells}</table>"
+        cards.append(
+            "<article class='kd-finding'>"
+            + (f"<p class='kd-kicker'>{kicker}</p>" if kicker else "")
+            + f"<h3>{headline}</h3>"
+            + (f"<p>{detail}</p>" if detail else "")
+            + rows
+            + "</article>"
+        )
+    if not cards:
+        return ""
+    log.info("report: embedded %d finding(s) from %s", len(cards), path)
+    return (
+        "<section class='kd-findings'><h2>What this run found</h2>"
+        + "<div class='kd-finding-grid'>"
+        + "".join(cards)
+        + "</div></section>"
+    )
+
+
 def _stat_tiles(run: _Run, cfg: Config, stats: dict[str, Any]) -> str:
     tiles = [
         _tile("assemblies", _fmt_int(stats["n_assemblies"]), f"{stats['n_samples']:,} samples"),
@@ -1368,6 +1434,7 @@ def build_report(cfg: Config, outdir: Path, *, force: bool = False) -> Path:
         "{{BIN_SIZE_HUMAN}}": html.escape(_human_bp(cfg.sketch.bin_size)),
         "{{RIBBON_SUBJECT}}": html.escape(ribbon_subject),
         "{{STAT_TILES}}": _stat_tiles(run, cfg, stats),
+        "{{FINDINGS}}": _findings_html(outdir),
         "{{NOTES}}": _notes_html(notes),
         "{{METHODS}}": _methods_html(run, cfg, notes),
         "{{FOOTER}}": html.escape(

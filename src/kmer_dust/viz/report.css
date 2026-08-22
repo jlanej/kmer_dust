@@ -525,3 +525,38 @@ footer.kd-foot {
 /* plotly's own hover layer is unused -- we draw the tooltip above. */
 .js-plotly-plot .plotly .modebar { opacity: 0.35; }
 .js-plotly-plot .plotly .modebar:hover { opacity: 1; }
+
+/* ---------------------------------------------------------------- findings */
+/* The argument, above the explorer. A reader who never drags the map should
+   still leave knowing what the run found. */
+.kd-findings { margin: 2.25rem 0 1.5rem; }
+.kd-findings > h2 {
+  font-size: .78rem; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--kd-dim); font-weight: 600; margin: 0 0 .9rem;
+}
+.kd-finding-grid {
+  display: grid; gap: .9rem;
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+}
+.kd-finding {
+  background: var(--kd-panel); border: 1px solid var(--kd-line);
+  border-radius: 10px; padding: 1.05rem 1.15rem 1.15rem;
+}
+.kd-finding .kd-kicker {
+  margin: 0 0 .3rem; font-size: .68rem; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--kd-accent); font-weight: 600;
+}
+.kd-finding h3 {
+  margin: 0 0 .5rem; font-size: 1.02rem; line-height: 1.35; font-weight: 600;
+  color: var(--kd-fg);
+}
+.kd-finding p { margin: 0 0 .7rem; font-size: .86rem; line-height: 1.55; color: var(--kd-dim); }
+.kd-evidence { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.kd-evidence th {
+  text-align: left; font-weight: 400; color: var(--kd-dim);
+  padding: .22rem 0; border-top: 1px solid var(--kd-line);
+}
+.kd-evidence td {
+  text-align: right; font-variant-numeric: tabular-nums; color: var(--kd-fg);
+  padding: .22rem 0; border-top: 1px solid var(--kd-line); white-space: nowrap;
+}
