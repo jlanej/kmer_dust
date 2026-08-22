@@ -61,8 +61,10 @@ seed: 7                      # propagates to every stage that has its own seed
 | `n_buckets` | `16` | power-of-two radix partitions for out-of-core counting. Raise it when a bucket no longer fits in RAM |
 
 > **Why the upper prevalence bound defaults to 1.0.** A k-mer shared by every
-> *sample* is not a k-mer shared by every *bin*. An HSat2 31-mer occurs in all
-> 232 samples and in ~0.1 % of bins — it is one of the most informative columns
+> *sample* is not a k-mer shared by every *bin*. Satellite k-mers are
+> near-universal across people while occupying a tiny fraction of bins —
+> measured on the acrocentric run, HSat2 is the dominant feature of 324 of
+> 1,303,159 bins (0.02 %) — it is one of the most informative columns
 > in the matrix, and cutting it would delete exactly the repeat-family signal the
 > clustering is supposed to find. Bin-level ubiquity is handled by IDF weighting
 > in `matrix:`. Lower this only if you deliberately want to suppress the shared
@@ -136,7 +138,11 @@ If the run comes back >90 % noise, lower `min_samples` before anything else.
 > | 200,000 | 126.0 s | 0.5 s | 251× | 0.832 | 0.931 |
 > | 1,303,159 | **4819 s** | **4.7 s** | **~1025×** | — | — |
 >
-> Same clustering — 809 vs 814 clusters at 200 k, noise within 0.3 points.
+> Closely agreeing, **not identical**: ARI 0.820 at 50 k and 0.832 at 200 k,
+> with cluster counts within 1 % (809 vs 814 at 200 k, noise within 0.3 points).
+> On the full 1.3 M set sklearn gives 3,021 clusters / 38.7 % noise and
+> fast_hdbscan 2,991 / 39.5 %. Close enough that every conclusion in
+> [RESULTS.md](RESULTS.md) is unaffected, far from bit-identical.
 > `fast_hdbscan` is by the authors of the original hdbscan package, is pure
 > numba (no compiler needed), and uses Boruvka over a KD-tree. kmer-dust prefers
 > it automatically and warns when it is missing.
@@ -169,12 +175,12 @@ If the run comes back >90 % noise, lower `min_samples` before anything else.
 | --- | --- | --- |
 | `reference_tracks` | `[censat, repeatmasker, segdup, telomere, gene]` | T2T-CHM13 tracks to overlay |
 | `assembly_tracks` | `[censat, repeatmasker, segdup]` | per-assembly tracks from the HPRC annotation index |
-| `annotate_assemblies` | `true` | set `false` for a reference-only quick look |
+| `annotate_assemblies` | `false` | the method annotates the **reference** and back-propagates; set `true` only to *validate* that, which costs ~414 MB per haplotype |
 
-> **`repeatmasker` is the expensive per-assembly track.** Measured on a real
-> run: the HPRC per-haplotype RepeatMasker BEDs average **167 MB** each
-> (cenSat ~250 kB, segdups ~5 MB), so annotating 24 haplotypes moves ~6 GB and
-> all 464 would move ~70 GB. The stage prefetches them concurrently (`threads`,
+> **`repeatmasker` is the expensive per-assembly track.** Measured from the
+> download log of a real run: the HPRC per-haplotype RepeatMasker BEDs average
+> **414 MB** each (range 343–432; cenSat ~250 kB, segdups ~19 MB), so annotating
+> 24 assemblies moved **9.9 GB** and all 464 haplotypes would move **~192 GB**. The stage prefetches them concurrently (`threads`,
 > capped at 8) and caches the *parsed* intervals under `datadir/cache/tracks/`,
 > so you pay once — but on a cluster with no compute-node egress, warm that
 > cache from the login node first, or set `assembly_tracks: [censat, segdup]`
@@ -194,7 +200,7 @@ If the run comes back >90 % noise, lower `min_samples` before anything else.
 
 | key | default | meaning |
 | --- | --- | --- |
-| `max_points` | `300000` | scatter is subsampled above this, and the report says so |
+| `max_points` | `1000000` | scatter is subsampled above this, and the report says so. `0` plots every bin. This is a **file size** budget, not a rendering one — WebGL draws 1.3 M points fine |
 | `title` / `subtitle` | `""` | override the generated header |
 | `embed_plotlyjs` | `true` | inline plotly.js so the HTML works with no network |
 | `point_size` | `3.0` | marker size |

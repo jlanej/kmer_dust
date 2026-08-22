@@ -4,14 +4,15 @@ The clusters are the product of this pipeline: each one is a set of 10 kb bins,
 drawn from many haplotypes, that share a k-mer vocabulary.  Two deliberate
 choices shape this module.
 
-*HDBSCAN, and specifically ``sklearn.cluster.HDBSCAN``.*  Density-based, so it
+*HDBSCAN.*  Density-based, so it
 does not have to be told how many clusters exist -- which matters because nobody
 knows how many distinct satellite/repeat vocabularies a pangenome contains --
 and it is allowed to say "noise" for the vast euchromatic middle instead of
-forcing every bin into some cluster.  The scikit-learn implementation is used
-rather than the standalone ``hdbscan`` package: it ships with a dependency we
-already have, is maintained against current NumPy, and its results are
-deterministic.  DBSCAN remains available for the case where the user genuinely
+forcing every bin into some cluster.  ``fast_hdbscan`` is used when it is
+installed and ``sklearn.cluster.HDBSCAN`` is the fallback -- see
+:func:`_hdbscan_backend` for why that order matters more than it sounds
+(scikit-learn has no Boruvka MST, so it is quadratic in n even on a 2-D
+embedding).  DBSCAN remains available for the case where the user genuinely
 wants one global density threshold.
 
 *Noise is reported, not hidden.*  A run where 95% of bins are noise is not a

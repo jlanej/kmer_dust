@@ -97,8 +97,8 @@ annotate:
   reference_tracks: [censat, repeatmasker, segdup, telomere, gene]
   assembly_tracks: [censat, repeatmasker, segdup]
   # The method annotates the REFERENCE and back-propagates. Turning this on
-  # would download ~167 MB per haplotype -- 78 GB across 465 -- purely to check
-  # an answer we can already check on a subset.
+  # would download ~414 MB per haplotype -- ~192 GB across the cohort -- purely
+  # to check an answer we can already check on a subset.
   annotate_assemblies: false
   min_frac_for_dominant: 0.25
 

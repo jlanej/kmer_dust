@@ -56,7 +56,7 @@ plus CHM13: 24 assemblies, 105,007 bins. The pipeline is written to scale to all
    ┌────────────────────────────▼────────────────────────────┐
    │ 1. sketch    tile into 10 kb bins; for every canonical   │
    │              31-mer keep it iff splitmix64(kmer) <       │
-   │              2^64 / scaled     ← FracMinHash             │
+   │              2^64 / scaled     ← FracMinHash (inclusive)  │
    └────────────────────────────┬────────────────────────────┘
                                 │  bins.parquet + sketch.parquet, per assembly
    ┌────────────────────────────▼────────────────────────────┐
@@ -91,8 +91,10 @@ matrix on a larger run. A k-mer present in **one**
 sample is mostly assembly noise, so a floor on *sample* prevalence (default: 10 %
 of samples) throws it away. The ceiling defaults to keeping everything, because a
 k-mer shared by every sample is not the same thing as a k-mer shared by every
-*bin* — an HSat2 31-mer occurs in all 232 samples and in 0.1 % of bins, which
-makes it one of the most informative columns in the whole matrix. Bin-level
+*bin*. Satellite k-mers are near-universal across people while occupying a tiny
+fraction of bins — measured on the acrocentric run, HSat2 is the dominant feature
+of 324 of 1,303,159 bins (0.02 %) — so they are exactly the columns that separate
+things, and the intuitive ceiling deletes them. Bin-level
 ubiquity is handled downstream by IDF weighting, not by throwing columns away.
 
 ---
@@ -149,7 +151,7 @@ as `config.resolved.yaml`. Three presets ship in `workflow/config/`:
 | preset | scope | rough cost |
 | --- | --- | --- |
 | `smoke.yaml` | the fetched test slices | seconds, laptop |
-| `chr21.yaml` | chr21 of every release-2 haplotype | ~1 h, one node |
+| `chr21.yaml` | chr21 of every release-2 haplotype that is T2T-complete | ~1 h, one node |
 | `full.yaml` | all autosomes, all haplotypes | HPC, Slurm array |
 
 See `docs/CONFIG.md` for every knob.
@@ -199,7 +201,7 @@ Yes, and [`docs/RESULTS.md`](docs/RESULTS.md) has the numbers from a real run �
 
 **Cluster membership is strongly non-random in position**, even though no
 coordinate enters the feature space. The median cluster's chr21 coordinates have
-an interquartile range of **3.20 Mb**, against **21.4 Mb** when cluster labels are
+an interquartile range of **3.20 Mb**, against **21.42 Mb** when cluster labels are
 permuted at random and **15.8 Mb** when they are permuted only among bins sharing
 the same dominant repeat annotation — a **4.9× concentration over the stricter
 null**, 6.7× over the uniform one. 96 % of clusters contain at least 80 % of the
@@ -230,7 +232,7 @@ of LINE/SINE/LTR fragments, so the cluster's modal label still agrees 84–94 % 
 the time while no single class owns any individual bin.
 
 Cost, on one laptop: sketching 24 chromosomes straight out of S3 took **46 s**;
-the randomized SVD took **6.5 s**; the UMAP took **18 minutes**, because
+the randomized SVD took **7.2 s**; the UMAP took **18 minutes**, because
 reproducibility pins it to a single thread.
 
 ---
@@ -266,7 +268,7 @@ reference-to-assembly test, and should not be read as one.
 **What is the honest test?** `backprop/cluster_transfer.parquet`. It compares the
 dominant feature of a cluster's *reference* bins against the dominant feature of
 its *assembly* bins, over the intersection of the two track sets' reachable
-vocabularies. For the 18 clusters with no reference bin, `asm_agreement` is `NaN`
+vocabularies. `asm_agreement` is `NaN` for 124 clusters (13.4 %): 18 have no reference bin at all, and the other 106 have reference bins whose dominant feature falls outside the vocabulary both sides share
 — there is nothing to transfer from — but the cluster is still named and still
 written to every BED.
 
@@ -422,12 +424,12 @@ Read these before trusting a number.
   minmers, which return a coordinate from the same sketch primitive in one step —
   does not exist yet.
 * **Bin phase is unquantified off the gapless subset.** `chr21.yaml` sets
-  `require_t2t_chrom: true` (dropping 424 of 464 haplotypes) precisely because
+  `require_t2t_chrom: true` (dropping 424 of the 462 that survive the cenSat filter, leaving 38) precisely because
   N-runs shift every downstream bin boundary; `full.yaml` sets it `false` and
   leans on `min_bin_acgt_frac`, which drops low-ACGT bins but does not restore
   phase.
 * **`full.yaml` has not been validated.** At `scaled: 2000` and 10 kb bins the
-  expected sketch is ~5 hashes per bin, which is also `min_bin_sketch`. Every
+  expected sketch is ~5 hashes per bin, while `full.yaml` lowers `min_bin_sketch` to 3 to match. Every
   reported number comes from the 10× denser `scaled: 200`.
 
 ---

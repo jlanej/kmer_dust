@@ -59,9 +59,10 @@ class SelectConfig:
     variation and assembly artefacts, which are the k-mers that would otherwise
     make every haplotype its own cluster.  The upper bound defaults to 1.0
     because a k-mer shared by every sample is not the same thing as a k-mer
-    shared by every *bin* -- an HSat2 31-mer occurs in all 232 samples and in
-    0.1 % of bins, which makes it one of the most informative columns in the
-    matrix.  Bin-level ubiquity is handled by IDF weighting in `matrix`, not
+    shared by every *bin*.  Satellite k-mers are near-universal across people
+    while occupying a tiny fraction of bins -- measured on the acrocentric run,
+    HSat2 is the dominant feature of 324 of 1,303,159 bins (0.02 %) -- so they
+    are exactly the columns that separate things.  Bin-level ubiquity is handled by IDF weighting in `matrix`, not
     here.  Lower it only if you specifically want to suppress the core shared
     vocabulary.
     """
@@ -171,7 +172,7 @@ class AnnotateConfig:
     # 96.8 % of clustered assembly bins. Per-assembly tracks are not needed for
     # that; they exist so `cluster_transfer_report` can independently CHECK it,
     # which is a validation run rather than the normal path, and which costs a
-    # ~167 MB RepeatMasker BED per haplotype.
+    # ~414 MB RepeatMasker BED per haplotype (measured mean over 24).
     annotate_assemblies: bool = False
 
 

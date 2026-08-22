@@ -3,7 +3,8 @@
 # chr21 is the cheapest chromosome that still contains everything interesting --
 # a large alpha-satellite HOR array, the acrocentric short arm with its rDNA and
 # subterminal satellite, and enough unique sequence for a control.  Roughly
-# 45 Mb x ~60 haplotypes ~= 270k bins; a few hours on 30-60 cores, ~64 GB peak.
+# require_t2t_chrom leaves ~38 qualifying haplotypes of 462; the run recorded in
+# docs/RESULTS.md took 23 of them plus CHM13 and produced 105k bins.
 # Start here before committing to full.yaml.
 
 run_name: chr21

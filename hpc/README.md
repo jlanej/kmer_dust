@@ -26,7 +26,7 @@ Read this before asking for an allocation.
 | config | haplotypes | bins | wall time | peak memory | where it hurts |
 | --- | --- | --- | --- | --- | --- |
 | `smoke.yaml` | 4 slices | ~1.6k | seconds | < 1 GB | nothing; it is a test |
-| `chr21.yaml` | ~60 | ~270k | hours | ~64 GB | `sketch` (network), `embed` |
+| `chr21.yaml` | ~38 max, 24 as run | 105k | ~20 min | ~8 GB | `sketch` (network), `embed` |
 | `full.yaml` | 464 + CHM13 | ~1.4e8 | days | ~256 GB | `decompose`, `embed` |
 
 `sketch` is I/O bound: each job streams an assembly over https from the HPRC
@@ -44,8 +44,8 @@ around:
   7 seconds. Either budget for it, or set `embed.deterministic: false` and give
   it `embed.n_jobs` cores while you are still tuning.
 * **`annotate` downloads more than `sketch` does.** The per-haplotype
-  RepeatMasker BEDs average 167 MB each, so 24 haplotypes move ~6 GB and all
-  464 would move ~70 GB. The stage prefetches them through a thread pool
+  RepeatMasker BEDs average 414 MB each (measured, range 343–432), so 24
+  assemblies moved 9.9 GB and all 464 haplotypes would move ~192 GB. The stage prefetches them through a thread pool
   (`threads`, capped at 8) and caches the *parsed* intervals under
   `datadir/cache/tracks/`, so you pay once -- but on a cluster whose compute
   nodes have no egress you must warm that cache from the login node

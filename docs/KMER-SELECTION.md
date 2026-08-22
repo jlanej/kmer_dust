@@ -96,8 +96,8 @@ most frequent N" rule would not have.
 > **This is the one that will bite you.** `max_features` is an *absolute* cap,
 > but the eligible vocabulary grows with how much sequence is in the run. A
 > config tuned on 61 k bins and reused on 1.3 M bins kept the same 200 k
-> features — **11 %** of the eligible 1.77 M instead of most of them — and the
-> matrix thinned from ~44 non-zeros per row to **5.4**. At that density most
+> features — **11 %** of the eligible 1.77 M instead of most of them — and on
+> that same data the matrix thinned from **47.2** non-zeros per row to **5.4**. At that density most
 > pairs of bins share no feature at all, cosine similarity is mostly exact
 > zeros, and the embedding is dominated by ties. Every stage still reported
 > success. `matrix` now warns when it happens; `max_features: 0` keeps
@@ -133,7 +133,7 @@ combination is not arbitrary: a truncated SVD of an IDF-weighted, L2-normalised
 presence matrix is exactly **latent semantic analysis**, and "which k-mer
 vocabulary does this bin use" is precisely the question LSA answers. It is also
 why the SVD is *not* mean-centred — centring would destroy the sparsity that
-makes a 1.3 M × 1.77 M factorisation take 19 seconds.
+makes a 1,303,159 × 1,765,879 factorisation with 61.5 M non-zeros take 106 s.
 
 See [CONFIG.md](CONFIG.md) for every knob and [RESULTS.md](RESULTS.md) for what
 came out.

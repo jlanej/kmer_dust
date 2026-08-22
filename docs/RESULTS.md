@@ -7,10 +7,11 @@ kmer-dust run --config workflow/config/chr21.yaml -s manifest.max_samples=20
 ```
 
 **Inputs.** HPRC release-2 haplotypes whose chr21 is a single gapless
-sequence (`manifest.require_t2t_chrom: true`) — that filter drops 424 of the
-464 release-2 haplotypes, leaving 40 candidates, from which the seeded,
-superpopulation-balanced sampler took **23 haplotypes across 20 samples**, plus
-**T2T-CHM13v2.0**. Nothing was downloaded whole: `pysam` range-requests each
+sequence. The filters run in sequence: `require_annotations: [censat]` drops 2
+of the 464 release-2 haplotypes, then `require_t2t_chrom` drops 424 of the
+remaining 462, leaving **38** candidates across 35 samples — from which the
+seeded, superpopulation-balanced sampler took **23 haplotypes across 20
+samples**, plus **T2T-CHM13v2.0**. Nothing was downloaded whole: `pysam` range-requests each
 assembly's chr21 straight out of the S3 bgzip file.
 
 **Parameters.** k = 31, 10 kb bins, `scaled = 200` (≈50 hashes/bin), IDF + L2,
@@ -20,20 +21,21 @@ assembly's chr21 straight out of the S3 bgzip file.
 
 | stage | result | wall time |
 | --- | --- | --- |
-| manifest | 424/464 haplotypes dropped by the T2T-completeness filter | 9.6 s |
+| manifest | 426 of 464 haplotypes dropped (2 no cenSat, then 424 not T2T-complete) | 9.6 s |
 | **sketch** | 24 chromosomes streamed from S3 → 105,013 bins, 4.9 M hashes | **46 s** |
 | select | 247,978 distinct → 224,683 (min_bins) → 222,676 (prevalence) → **200,349** | 1.4 s |
 | matrix | 105,007 × 200,349, 4.39 M nnz, 0.021 % dense, 34 MiB | 2.6 s |
 | decompose | randomized SVD, k = 64, σ₀ = 36.4 | **7.2 s** |
 | embed | UMAP, 105,007 rows | **1088 s** |
 | cluster | HDBSCAN → 926 clusters, 13.4 % noise | 23 s |
-| annotate | 24 per-haplotype track sets + the T2T tracks (~6 GB) | ~65 min |
+| annotate | 23 per-haplotype track sets + the T2T tracks (9.9 GB) | ~66 min |
 | enrich + backprop + report | 23,175 enrichment tests, 25 BEDs, 9.5 MB HTML | 7 s |
 
 Two of those are worth internalising. **The SVD is not the bottleneck — the
-embedding is**, by a factor of 160, because `embed.deterministic: true` pins
+embedding is**, by a factor of 151, because `embed.deterministic: true` pins
 UMAP to one thread. And **`annotate` moves more bytes than `sketch` does**: the
-per-haplotype RepeatMasker BEDs average 167 MB each.
+per-haplotype RepeatMasker BEDs average 414 MB each (measured; 9.9 GB for this
+run, and ~192 GB if it were run across all 464 haplotypes).
 
 ## Result 1 — the map recovers synteny with no aligner
 
@@ -41,12 +43,13 @@ A cluster is typically *the same locus in every haplotype*:
 
 | | observed | size-matched random baseline |
 | --- | --- | --- |
-| median positional spread of a cluster (IQR of chr21 coordinates) | **3.20 Mb** | 21.6 Mb |
+| median positional spread of a cluster (IQR of chr21 coordinates) | **3.20 Mb** | 21.42 Mb |
 | concentration factor | **6.7×** | 1× |
-| clusters containing ≥80 % of the 24 haplotypes | **96.0 %** | — |
-| median haplotypes per cluster | **24 of 24** | — |
+| clusters containing ≥80 % of the 24 assemblies | **96.0 %** | — |
+| median assemblies per cluster (23 haplotypes + CHM13) | **24 of 24** | — |
 
-The tightest clusters span 12 kb. Nothing in the pipeline ever saw a coordinate,
+The tightest single cluster has a positional IQR of 12.5 kb (its full span is
+50 kb, which is also the smallest span in the run). Nothing in the pipeline ever saw a coordinate,
 a chain file or an alignment.
 
 > Measured on localised bins only. This run predates the placement fix, so every
@@ -62,7 +65,8 @@ answer: name a cluster from **CHM13's** annotation, then check what the *HPRC*
 bins in that same cluster are called by each assembly's own, independently
 generated cenSat/RepeatMasker/segdup tracks.
 
-Over 288 testable clusters (≥5 reference bins, ≥20 assembly bins):
+Over 289 testable clusters (≥5 reference bins, ≥20 assembly bins, and a
+reference top feature inside the shared vocabulary):
 
 | reference top feature | clusters | median per-bin agreement | top-feature match |
 | --- | --- | --- | --- |
@@ -75,7 +79,7 @@ Over 288 testable clusters (≥5 reference bins, ≥20 assembly bins):
 | `sine` | 17 | 0.37 | 94 % |
 | `line` | 93 | 0.31 | 84 % |
 | `ltr` | 22 | 0.27 | 86 % |
-| `ct` (centromeric transition) | 98 | 0.12 | 42 % |
+| `ct` (centromeric transition) | 99 | 0.10 | 41 % |
 
 The split is exactly what the biology predicts. **Satellite arrays are
 vocabulary-defined**, so a cluster built purely from shared k-mers *is* the
@@ -85,7 +89,9 @@ agrees 84–94 % of the time, but no single class dominates any individual bin, 
 per-bin agreement is necessarily low. `ct` is the honest floor — "somewhere in
 the centromeric transition" is not a vocabulary, and it does not transfer.
 
-Strongest individual enrichments (log₂, hypergeometric):
+A selection of the strongest enrichments (log₂, hypergeometric). Two others
+rank higher and are omitted only because they are less interpretable —
+C826 `low_complexity` at 8.84 and C177 `retroposon` at 8.62:
 
 | cluster | feature | bins | fraction of cluster | log₂ enrichment | −log₁₀ p |
 | --- | --- | --- | --- | --- | --- |
@@ -194,10 +200,10 @@ underlying sequence family is chromosome-specific.
 
 **1,061,514 of the 1,303,159 bins (81.5 %)** come from `chrN_*_random` contigs
 with no chromosome coordinates; of the 799,448 bins that were clustered at all,
-649,671 (81.3 %) are unlocalised. Of clusters with ≥20 bins, **0 % are purely
-unlocalised and 100 % mix localised and unlocalised bins** — so this material
-integrates with the placed sequence rather than forming its own compartment of
-assembly artefacts.
+649,671 (81.3 %) are unlocalised. **Only 14 of the 3,021 clusters (0.46 %) are
+made entirely of unlocalised bins; 99.54 % mix localised and unlocalised** — so
+this material integrates with the placed sequence rather than forming its own
+compartment of assembly artefacts.
 
 ## Assigning a chromosome to an unplaced contig — and knowing when not to
 
@@ -234,6 +240,7 @@ unlocalised bins at 93 %+ accuracy.
 
 Two things dominated this run and neither had to. scikit-learn's HDBSCAN has no
 Boruvka MST, so it is O(n²) even on a 2-D embedding — `fast_hdbscan` does the
-identical clustering 1,025× faster. And per-assembly annotation was never an
+same clustering ~1,025× faster -- closely agreeing rather than identical
+(ARI 0.83). And per-assembly annotation was never an
 input to the method, only a way to check it; annotating the reference alone is
 now the default.
