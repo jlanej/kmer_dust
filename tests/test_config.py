@@ -222,3 +222,51 @@ def test_bare_invocation_shows_help():
     )
     assert "Usage" in (proc.stdout + proc.stderr)
     assert "sketch" in (proc.stdout + proc.stderr)
+
+
+def test_a_partial_rerun_keeps_the_timings_of_stages_it_skipped(tmp_path):
+    """Re-running one cheap stage must not erase the record of the expensive ones.
+
+    A skipped stage short-circuits on its existing output and reports ~0 s, so
+    overwriting the summary with only this invocation's stages destroys exactly
+    the evidence you wanted -- what the run actually cost.
+    """
+    import json
+
+    from kmer_dust.config import Config
+    from kmer_dust.pipeline import StageResult, _write_run_summary
+
+    cfg = Config(outdir=str(tmp_path))
+    _write_run_summary(
+        cfg,
+        [
+            StageResult("sketch", 702.0, {"bins": 100}),
+            StageResult("cluster", 4819.0, {"clusters": 3021}),
+        ],
+    )
+    # ... now a partial re-run touches only `report`
+    _write_run_summary(cfg, [StageResult("report", 2.1, {"path": "x.html"})])
+
+    stages = {s["name"]: s for s in json.loads((tmp_path / "run_summary.json").read_text())["stages"]}
+    assert stages["sketch"]["seconds"] == 702.0, "the expensive stage's timing survived"
+    assert stages["cluster"]["clusters"] == 3021
+    assert stages["report"]["seconds"] == 2.1
+    # and re-running a stage updates it rather than duplicating it
+    _write_run_summary(cfg, [StageResult("cluster", 5.0, {"clusters": 42})])
+    stages = {s["name"]: s for s in json.loads((tmp_path / "run_summary.json").read_text())["stages"]}
+    assert stages["cluster"]["seconds"] == 5.0
+    assert stages["cluster"]["clusters"] == 42
+    assert stages["sketch"]["seconds"] == 702.0
+
+
+def test_run_summary_keeps_pipeline_order(tmp_path):
+    import json
+
+    from kmer_dust.config import Config
+    from kmer_dust.pipeline import STAGES, StageResult, _write_run_summary
+
+    cfg = Config(outdir=str(tmp_path))
+    _write_run_summary(cfg, [StageResult("report", 1.0, {})])
+    _write_run_summary(cfg, [StageResult("sketch", 2.0, {})])
+    names = [s["name"] for s in json.loads((tmp_path / "run_summary.json").read_text())["stages"]]
+    assert names == [n for n in STAGES if n in set(names)]

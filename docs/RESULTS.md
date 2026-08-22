@@ -24,8 +24,8 @@ assembly's chr21 straight out of the S3 bgzip file.
 | **sketch** | 24 chromosomes streamed from S3 → 105,013 bins, 4.9 M hashes | **46 s** |
 | select | 247,978 distinct → 224,683 (min_bins) → 222,676 (prevalence) → **200,349** | 1.4 s |
 | matrix | 105,007 × 200,349, 4.39 M nnz, 0.021 % dense, 34 MiB | 2.6 s |
-| decompose | randomized SVD, k = 64, σ₀ = 36.4 | **6.5 s** |
-| embed | UMAP, 105,007 rows | **1084 s** |
+| decompose | randomized SVD, k = 64, σ₀ = 36.4 | **7.2 s** |
+| embed | UMAP, 105,007 rows | **1088 s** |
 | cluster | HDBSCAN → 926 clusters, 13.4 % noise | 23 s |
 | annotate | 24 per-haplotype track sets + the T2T tracks (~6 GB) | ~65 min |
 | enrich + backprop + report | 23,175 enrichment tests, 25 BEDs, 9.5 MB HTML | 7 s |
@@ -48,6 +48,12 @@ A cluster is typically *the same locus in every haplotype*:
 
 The tightest clusters span 12 kb. Nothing in the pipeline ever saw a coordinate,
 a chain file or an alignment.
+
+> Measured on localised bins only. This run predates the placement fix, so every
+> bin it contains sits on a whole `chrN` contig and `start` is a genuine
+> chromosome coordinate. On a run that includes `chrN_*_random` contigs the same
+> statistic must filter on `placed`, because those coordinates are contig-local —
+> see the acrocentric section below.
 
 ## Result 2 — satellite identity survives back-propagation
 
@@ -186,10 +192,12 @@ underlying sequence family is chromosome-specific.
 
 ## The unlocalised material is not an island
 
-81 % of the bins (649,671) come from `chrN_*_random` contigs with no chromosome
-coordinates. Of clusters with ≥20 bins, **0 % are purely unlocalised and 100 %
-mix localised and unlocalised bins** — so this material integrates with the
-placed sequence rather than forming its own compartment of assembly artefacts.
+**1,061,514 of the 1,303,159 bins (81.5 %)** come from `chrN_*_random` contigs
+with no chromosome coordinates; of the 799,448 bins that were clustered at all,
+649,671 (81.3 %) are unlocalised. Of clusters with ≥20 bins, **0 % are purely
+unlocalised and 100 % mix localised and unlocalised bins** — so this material
+integrates with the placed sequence rather than forming its own compartment of
+assembly artefacts.
 
 ## Assigning a chromosome to an unplaced contig — and knowing when not to
 
@@ -222,7 +230,7 @@ unlocalised bins at 93 %+ accuracy.
 | embed | 240 s | 240 s |
 | **cluster** | **4,819 s** | **~5 s** (`fast_hdbscan`) |
 | **annotate** | **2,484 s** | **~60 s** (reference-only is the default) |
-| **total** | **2 h 15 m** | **~20 min** |
+| **total** | **2 h 24 m** | **~20 min** |
 
 Two things dominated this run and neither had to. scikit-learn's HDBSCAN has no
 Boruvka MST, so it is O(n²) even on a 2-D embedding — `fast_hdbscan` does the

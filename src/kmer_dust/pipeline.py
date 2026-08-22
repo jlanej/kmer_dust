@@ -433,14 +433,35 @@ def run_all(
 
 
 def _write_run_summary(cfg: Config, results: list[StageResult]) -> None:
+    """Write ``run_summary.json``, preserving stages this invocation did not run.
+
+    A partial re-run (``--force-from cluster``, ``--only report``) used to
+    overwrite the file with only the stages it touched, and every skipped stage
+    reported ~0 s because it short-circuited on an existing output.  The effect
+    was that re-running one cheap stage destroyed the timing record of the
+    expensive ones -- which is exactly when you most want it, since the timings
+    are the evidence for what a run costs.  Stages are now merged by name, newer
+    wins, and the original stage order is kept.
+    """
+    path = cfg.path("run_summary.json")
+    previous: list[dict[str, Any]] = []
+    if path.exists():
+        try:
+            previous = json.loads(path.read_text()).get("stages", []) or []
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug("ignoring unreadable %s (%s)", path, exc)
+    merged: dict[str, dict[str, Any]] = {
+        str(stage.get("name")): stage for stage in previous if stage.get("name")
+    }
+    for r in results:
+        merged[r.name] = {"name": r.name, "seconds": round(r.seconds, 3), **r.detail}
+    ordered = [merged[name] for name in STAGES if name in merged]
+    ordered += [s for n, s in merged.items() if n not in set(STAGES)]
     payload = {
         "run_name": cfg.run_name,
         "outdir": str(cfg.outdir),
-        "stages": [
-            {"name": r.name, "seconds": round(r.seconds, 3), **r.detail} for r in results
-        ],
+        "stages": ordered,
     }
-    path = cfg.path("run_summary.json")
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2))
     tmp.replace(path)
