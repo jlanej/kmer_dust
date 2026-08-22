@@ -42,6 +42,7 @@ plus CHM13: 24 assemblies, 105,007 bins. The pipeline is written to scale to all
 - [Outputs](#outputs)
 - [Design notes](#design-notes)
 - [Prior work, and how this differs](#prior-work-and-how-this-differs)
+- [What the sketch can and cannot see](#what-the-sketch-can-and-cannot-see)
 - [References](#references)
 - [Development](#development)
 
@@ -268,6 +269,30 @@ its *assembly* bins, over the intersection of the two track sets' reachable
 vocabularies. For the 18 clusters with no reference bin, `asm_agreement` is `NaN`
 — there is nothing to transfer from — but the cluster is still named and still
 written to every BED.
+
+---
+
+## What the sketch can and cannot see
+
+[`docs/REPRESENTATION.md`](docs/REPRESENTATION.md) reports a representation study
+run against `results/chr21`. Three findings bear directly on the defaults above:
+
+* **A live alpha-satellite HOR array carries ~27 distinct 31-mer hashes per
+  200 kb; a segmental duplication carries ~1,024** — a 38x vocabulary collapse,
+  monotone across classes. Satellite arrays are vocabulary-*starved*, not
+  saturated.
+* **`sketch` collapses duplicates within a bin** (`sketch.py:311-317`). That
+  discards 5.3 % of instances genome-wide and **73.6 % inside
+  `asat_hor_active`**.
+* **Inside those arrays a hash's cross-haplotype reproducibility rises 5.1x with
+  its local copy number** (P(shared) 0.179 for singletons, 0.915 at >=65 copies).
+  `matrix.weighting: idf` weights in the opposite direction, which is right for
+  euchromatin and inverted for satellite.
+
+Position is free to keep (`bin_index == position // bin_size`), and keeping it
+enables order-aware readouts the current shards cannot express -- including
+recovering chr21's 11-monomer HOR period from hash spacing alone, with no monomer
+library and no alignment, in 22 of 24 haplotypes.
 
 ---
 
