@@ -270,3 +270,32 @@ def test_run_summary_keeps_pipeline_order(tmp_path):
     _write_run_summary(cfg, [StageResult("sketch", 2.0, {})])
     names = [s["name"] for s in json.loads((tmp_path / "run_summary.json").read_text())["stages"]]
     assert names == [n for n in STAGES if n in set(names)]
+
+
+def test_a_cache_hit_does_not_overwrite_a_real_measurement(tmp_path):
+    """--force-from still "runs" the upstream stages; they just short-circuit.
+
+    They report a fraction of a second, which is a cache hit rather than a
+    measurement. Letting that overwrite the real number loses exactly what the
+    summary exists to record -- observed on the full-scale run, where resuming
+    from `enrich` rewrote a 4,548 s sketch as 1.4 s.
+    """
+    import json
+
+    from kmer_dust.config import Config
+    from kmer_dust.pipeline import StageResult, _write_run_summary
+
+    cfg = Config(outdir=str(tmp_path))
+    _write_run_summary(cfg, [StageResult("sketch", 4548.1, {"bins": 18265312})])
+    # resumed run: same result, instantly -> it cannot have redone the work
+    _write_run_summary(cfg, [StageResult("sketch", 1.4, {"bins": 18265312})])
+
+    sketch = json.loads((tmp_path / "run_summary.json").read_text())["stages"][0]
+    assert sketch["seconds"] == 4548.1
+    assert sketch["reused"] is True
+
+    # but a genuine re-run with a DIFFERENT result must replace it
+    _write_run_summary(cfg, [StageResult("sketch", 12.0, {"bins": 999})])
+    sketch = json.loads((tmp_path / "run_summary.json").read_text())["stages"][0]
+    assert sketch["seconds"] == 12.0
+    assert sketch["bins"] == 999

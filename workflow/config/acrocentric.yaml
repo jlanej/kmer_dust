@@ -1,4 +1,5 @@
 # Every HPRC release-2 haplotype, across the five acrocentric chromosomes.
+# 463 assemblies in practice: 462 of the 464 haplotypes publish a chromAlias.
 #
 # The acrocentric short arms carry the rDNA arrays, the largest satellite blocks
 # in the genome, and -- per Guarracino et al. 2023 -- recombine with each other
@@ -7,7 +8,7 @@
 # reference-light method has something to say.
 #
 # Cost, from measured rates: ~2.7 h sketching (download-bound), ~19 M bins,
-# ~0.9 B non-zeros, ~7 GB matrix. Whole-genome across all 465 haplotypes would
+# ~0.9 B non-zeros, ~7 GB matrix. Whole-genome across all 464 haplotypes would
 # be ~21 h and a 54 GB matrix; that needs a cluster, not a laptop.
 
 run_name: acrocentric-all
@@ -110,7 +111,9 @@ enrich:
 report:
   max_points: 1000000
   title: "kmer-dust — every HPRC haplotype, the five acrocentric chromosomes"
-  subtitle: "465 assemblies, 10 kb bins, no aligner"
+  # 463 = 462 haplotypes with a chromAlias + CHM13. The cohort is 464
+  # haplotypes; require_annotations drops 2.
+  subtitle: "462 HPRC haplotypes + T2T-CHM13, 10 kb bins, no aligner"
   point_size: 2.0
   embed_plotlyjs: true
   seed: 7

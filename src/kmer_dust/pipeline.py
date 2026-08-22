@@ -454,7 +454,25 @@ def _write_run_summary(cfg: Config, results: list[StageResult]) -> None:
         str(stage.get("name")): stage for stage in previous if stage.get("name")
     }
     for r in results:
-        merged[r.name] = {"name": r.name, "seconds": round(r.seconds, 3), **r.detail}
+        entry = {"name": r.name, "seconds": round(r.seconds, 3), **r.detail}
+        old = merged.get(r.name)
+        # A stage upstream of --force-from still "runs": it short-circuits on its
+        # existing output and reports a fraction of a second. That is a cache
+        # hit, not a measurement, and letting it overwrite the real number loses
+        # exactly what the summary is for. If a stage reports the identical
+        # result in under a second having previously taken longer, it cannot
+        # have redone the work -- keep the measurement and say it was reused.
+        previous_seconds = float(old.get("seconds", 0.0)) if old else 0.0
+        if (
+            old is not None
+            and previous_seconds > 10.0
+            and r.seconds < 0.05 * previous_seconds
+            and {k: v for k, v in old.items() if k not in ("name", "seconds", "reused")}
+            == {k: v for k, v in entry.items() if k not in ("name", "seconds")}
+        ):
+            old["reused"] = True
+            continue
+        merged[r.name] = entry
     ordered = [merged[name] for name in STAGES if name in merged]
     ordered += [s for n, s in merged.items() if n not in set(STAGES)]
     payload = {

@@ -196,6 +196,7 @@ class _Run:
     notes: list[str] = field(default_factory=list)
     timestamp: str = ""
     embed_label: str = "UMAP"
+    outdir: str = ""
 
 
 def _merge_left(base: pd.DataFrame, other: pd.DataFrame, key: str) -> pd.DataFrame:
@@ -267,6 +268,7 @@ def _load_run(cfg: Config, outdir: Path) -> _Run:
         else:
             notes.append("The bin table is empty: every bin was filtered out upstream.")
         run = _Run(
+            outdir=str(outdir),
             bins=_empty_report_frame(),
             manifest=manifest,
             stages=stages,
@@ -383,6 +385,7 @@ def _load_run(cfg: Config, outdir: Path) -> _Run:
     bins = _coerce(bins)
 
     return _Run(
+        outdir=str(outdir),
         bins=bins,
         manifest=manifest,
         enrichment=enrichment,
@@ -1163,15 +1166,57 @@ def _stat_tiles(run: _Run, cfg: Config, stats: dict[str, Any]) -> str:
             "hashes per bin",
             empty=stats["median_sketch"] is None,
         ),
-        _tile(
-            "annotated",
-            f"{100 * stats['annotated_fraction']:.0f}%"
-            if stats["annotated_fraction"] is not None else "not run",
-            "bins with a track hit",
-            empty=stats["annotated_fraction"] is None,
-        ),
+        _labelled_tile(stats),
     ]
     return "".join(tiles)
+
+
+
+
+def _inferred_fraction(run: _Run) -> float | None:
+    """Fraction of bins that got a label from the reference via their cluster.
+
+    ``None`` when the run has no backprop/inferred.parquet, which is how the
+    caller decides whether to show this at all.
+    """
+    path = Path(run.outdir) / "backprop" / "inferred.parquet"
+    if not path.is_file():
+        return None
+    try:
+        column = pd.read_parquet(path, columns=["inferred_feature"])["inferred_feature"]
+    except (OSError, ValueError, KeyError) as exc:
+        log.debug("cannot read %s (%s)", path, exc)
+        return None
+    if not len(column):
+        return None
+    return float((column.astype("string").fillna("") != "").mean())
+
+
+def _labelled_tile(stats: dict[str, Any]) -> str:
+    """How many bins carry a feature label -- by the route the run actually used.
+
+    Under the default (``annotate_assemblies: false``) only the reference is
+    annotated, so "bins with a track hit" is ~0.2 % and reads as a failed stage.
+    It is not: assembly bins get their label from the reference through cluster
+    membership, and the honest number is how many bins that reached. Reporting
+    the track-hit rate in that case would advertise the pipeline's central idea
+    as a bug.
+    """
+    inferred = stats.get("inferred_fraction")
+    if inferred is not None:
+        return _tile(
+            "labelled",
+            f"{100 * inferred:.0f}%",
+            "via the reference, by cluster",
+            empty=False,
+        )
+    annotated = stats.get("annotated_fraction")
+    return _tile(
+        "annotated",
+        f"{100 * annotated:.0f}%" if annotated is not None else "not run",
+        "bins with a track hit",
+        empty=annotated is None,
+    )
 
 
 def _notes_html(notes: Sequence[str]) -> str:
@@ -1302,6 +1347,7 @@ def _stats(run: _Run, cfg: Config) -> dict[str, Any]:
         "n_clusters": n_clusters,
         "noise_fraction": noise_fraction,
         "annotated_fraction": annotated_fraction,
+        "inferred_fraction": _inferred_fraction(run),
         "median_sketch": median_sketch,
     }
 

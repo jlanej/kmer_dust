@@ -150,12 +150,33 @@ def _compute(
     # feature zero times without letting the pseudo-count dominate real ratios.
     eps = 1.0 / max(total, 1)
 
-    for cid in cluster_ids:
-        mask = labels == cid
-        size = int(mask.sum())
-        member_carries = carries[mask]
-        counts = member_carries.sum(axis=0).astype(np.int64)
-        annotated_here = int(joined["annotated"].to_numpy(dtype=bool)[mask].sum())
+    # Per-cluster totals in ONE pass, not one pass per cluster.
+    #
+    # The obvious loop -- `mask = labels == cid` then `carries[mask].sum(0)` --
+    # is O(n_clusters x n_bins x n_features). That is invisible at 3,021
+    # clusters over 1.3 M bins and fatal at 53,130 over 18.3 M: 32 trillion
+    # element operations, single-threaded, i.e. days. Sorting once by label and
+    # reducing between the group boundaries makes it O(n_bins x n_features)
+    # regardless of how many clusters there are.
+    annotated_flags = joined["annotated"].to_numpy(dtype=bool)
+    chrom_values = joined["chrom"].to_numpy(dtype=object)
+    assembly_values = joined["assembly"].to_numpy(dtype=object)
+    order = np.argsort(labels, kind="stable")
+    sorted_labels = labels[order]
+    starts = np.searchsorted(sorted_labels, cluster_ids, side="left")
+    sizes = np.diff(np.append(starts, sorted_labels.size))
+    counts_by_cluster = np.add.reduceat(carries[order], starts, axis=0).astype(np.int64)
+    annotated_by_cluster = np.add.reduceat(annotated_flags[order], starts).astype(np.int64)
+    # reduceat quirk: a zero-length group repeats the row at `start` instead of
+    # summing nothing. Empty groups cannot occur here (every id comes from
+    # np.unique of the same labels), but assert it rather than trust it.
+    if sizes.min() <= 0:  # pragma: no cover - defensive
+        raise RuntimeError("empty cluster group; reduceat boundaries are wrong")
+
+    for pos, cid in enumerate(cluster_ids):
+        size = int(sizes[pos])
+        counts = counts_by_cluster[pos]
+        annotated_here = int(annotated_by_cluster[pos])
 
         top_feature = ""
         ranked: list[tuple[str, float]] = []
@@ -215,8 +236,9 @@ def _compute(
         else:
             purity = 0.0
 
-        chroms = joined["chrom"].to_numpy(dtype=object)[mask]
-        assemblies = joined["assembly"].to_numpy(dtype=object)[mask]
+        members = order[starts[pos] : starts[pos] + size]
+        chroms = chrom_values[members]
+        assemblies = assembly_values[members]
         name_records.append(
             {
                 "cluster": int(cid),

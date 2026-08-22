@@ -322,3 +322,93 @@ def test_empty_inputs(make_config, run_dir):
     assert len(enrichment) == 0 and len(names) == 0
     assert list(enrichment.columns) == list(schemas.ENRICHMENT_COLUMNS)
     assert list(names.columns) == list(schemas.CLUSTER_NAME_COLUMNS)
+
+
+def test_enrichment_is_linear_in_bins_not_bins_times_clusters(make_config, run_dir):
+    """The per-cluster mask was O(n_clusters x n_bins x n_features).
+
+    Invisible at 3,021 clusters over 1.3 M bins; fatal at 53,130 over 18.3 M --
+    32 trillion element operations, single-threaded, which stalled a real run
+    for hours before it was caught. This pins the fix: many small clusters must
+    cost about the same as few large ones for the same number of bins.
+    """
+    import time
+
+    import numpy as np
+
+    n_bins = 60_000
+    rng = np.random.default_rng(0)
+
+    def build(n_clusters: int):
+        uids = [f"A|c|{i}" for i in range(n_bins)]
+        rows = pd.DataFrame(
+            {
+                "bin_uid": uids,
+                "assembly": "A",
+                "chrom": "chr21",
+                "source": "hprc",
+                "haplotype": "pat",
+            }
+        )
+        clusters = pd.DataFrame(
+            {
+                "bin_uid": uids,
+                "cluster": (np.arange(n_bins) % n_clusters).astype(np.int32),
+            }
+        )
+        ann = pd.DataFrame({"bin_uid": uids, "annotated": True})
+        for f in schemas.FEATURE_VOCAB:
+            ann[schemas.feature_column(f)] = np.float32(0.0)
+        ann[schemas.feature_column("hsat3")] = rng.random(n_bins).astype(np.float32)
+        ann["dominant_feature"] = "hsat3"
+        ann["dominant_frac"] = np.float32(1.0)
+        return rows, clusters, ann
+
+    timings = {}
+    for n_clusters in (10, 2_000):
+        rows, clusters, ann = build(n_clusters)
+        cfg = make_config()
+        cfg.enrich.min_cluster_size = 1
+        start = time.perf_counter()
+        enrichment, names = enrich_clusters(rows, clusters, ann, cfg, run_dir / str(n_clusters))
+        timings[n_clusters] = time.perf_counter() - start
+        assert len(names) == n_clusters
+
+    # 200x the clusters over the same bins must not cost anything like 200x.
+    ratio = timings[2_000] / max(timings[10], 1e-6)
+    assert ratio < 25, f"cost scales with n_clusters: {timings} (ratio {ratio:.0f}x)"
+
+
+def test_grouped_counts_match_the_naive_per_cluster_masks(make_config, run_dir):
+    """Correctness of the reduceat grouping against the loop it replaced."""
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    n = 3_000
+    uids = [f"A|c|{i}" for i in range(n)]
+    labels = rng.integers(-1, 40, size=n).astype(np.int32)
+    rows = pd.DataFrame(
+        {"bin_uid": uids, "assembly": "A", "chrom": "chr21", "source": "hprc", "haplotype": "pat"}
+    )
+    clusters = pd.DataFrame({"bin_uid": uids, "cluster": labels})
+    ann = pd.DataFrame({"bin_uid": uids, "annotated": True})
+    for f in schemas.FEATURE_VOCAB:
+        ann[schemas.feature_column(f)] = np.float32(0.0)
+    frac = rng.random(n).astype(np.float32)
+    ann[schemas.feature_column("bsat")] = frac
+    ann["dominant_feature"] = "bsat"
+    ann["dominant_frac"] = frac
+
+    cfg = make_config()
+    cfg.enrich.min_cluster_size = 1
+    cfg.enrich.min_frac = 0.25
+    enrichment, _names = enrich_clusters(rows, clusters, ann, cfg, run_dir)
+
+    carries = frac >= 0.25
+    got = enrichment[enrichment["feature"] == "bsat"].set_index("cluster")
+    for cid in np.unique(labels):
+        expected_k = int(carries[labels == cid].sum())
+        expected_size = int((labels == cid).sum())
+        if cid in got.index:
+            assert int(got.loc[cid, "n_bins_cluster"]) == expected_k, cid
+            assert int(got.loc[cid, "cluster_size"]) == expected_size, cid
